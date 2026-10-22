@@ -1,0 +1,45 @@
+# Python environments and bytecode
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+secrets/
+
+# Model artifacts and caches
+weights/
+checkpoints/
+models_ckpt/
+*.ckpt
+*.pth
+*.pth.tar
+*.pt
+*.safetensors
+.cache/
+.huggingface/
+
+# Data and generated artifacts
+data/
+datasets/
+outputs/
+output/
+predict_result/
+tmp_dir/
+*.tif
+*.tiff
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
