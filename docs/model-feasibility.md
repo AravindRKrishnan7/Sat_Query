@@ -1,243 +1,216 @@
 # Change-Agent model feasibility
 
-Verified 2026-10-22 against the official
+Investigated against the official
 [Change-Agent repository](https://github.com/Chen-Yang-Liu/Change-Agent) and
-[published checkpoint repository](https://huggingface.co/lcybuaa/Change-Agent).
-No checkpoint, language model, or dataset was downloaded during this review.
+[model repository](https://huggingface.co/lcybuaa/Change-Agent). The first real
+experiment completed on 2026-10-23.
 
-## Decision
+## Outcome
 
-Use the multi-level change interpretation (MCI) model as the first research
-candidate, but do not treat upstream inference as Mac-compatible. Start with a
-small, auditable adapter and CPU inference. Attempt MPS only after CPU produces
-a valid output. The joint checkpoint supports both a three-class mask and a
-caption, so an external LLM and the `lagent` agent layer are not required for
-the v1 outputs.
+The MCI model is feasible as a CPU research baseline on this Apple M4 machine.
+A real checkpoint forward pass completed, generated finite segmentation logits,
+saved a three-class indexed mask and visual products, and decoded a caption.
+This result uses the actual upstream architecture with small, reproducible
+device/dependency patches—not image differencing or synthetic predictions.
 
-The main risks are CUDA-hardcoded tensors, legacy MMCV/MMseg dependencies,
-broken CLI argument handling, unsafe non-256 resizing, pickle-based checkpoint
-loading, and unclear combined licensing terms.
+MPS was attempted after CPU success but was unavailable before model loading:
+PyTorch 2.14.1 reports that MPS is built but
+`torch.backends.mps.is_available()` is false. No MPS prediction exists, so mask
+agreement and caption parity cannot be calculated.
 
-## What was verified locally
+## Verified local environment
 
-- Repository: empty initial branch `main`, no commits, remote
-  `https://github.com/AravindRKrishnan7/Sat_Query.git`.
-- Hardware: MacBook Pro `Mac16,1`, Apple M4 (10 CPU cores), arm64, 16 GB unified
-  memory.
-- Operating system: macOS 15.6 (build 24G84).
-- Storage at inspection time: 149 GiB available on the project volume.
-- Memory at inspection time: `memory_pressure -Q` reported 40% system-wide free.
-- Python found: Homebrew Python 3.11.17, framework Python 3.14.6, and Apple
-  `/usr/bin/python3` 3.9.6.
-- Isolation choice: `.venv` created with Python 3.9.6 to match upstream's stated
-  Python 3.9 environment. It currently contains no model packages.
-- PyTorch is absent in that environment, so CPU tensor execution and MPS
-  availability have not yet been measured through PyTorch.
+- MacBook Pro `Mac16,1`, Apple M4 (10 logical CPU cores), arm64, 16 GiB unified
+  memory; macOS 15.6 (build 24G84).
+- Project-local `.venv`: CPython 3.11.17. Python 3.9 was not retained merely
+  because upstream used it; current PyTorch 2.14.1 provides a native CPython
+  3.11/macOS arm64 wheel.
+- Installed direct dependencies: PyTorch 2.14.1, NumPy 2.4.6, Pillow 13.0.0,
+  and einops 0.8.2. No global packages were installed.
+- At the resumed check: 139.2 GiB disk free and 33% system-wide memory free.
+- CPU tensor test passed; CUDA is unavailable; MPS is built but unavailable.
 
-Hardware capacity is reasonable for a 914 MB checkpoint, but 16 GB unified
-memory is not proof that deserialization plus the model and activations will
-fit. Peak memory is part of the real test.
+## Upstream entry point and compatibility work
 
-## What upstream states and the source actually does
+Upstream documents `Multi_change/predict.py` with `--imgA_path`, `--imgB_path`,
+and `--mask_save_path`. It invokes the joint mask and caption heads. The
+dataset evaluator `Multi_change/test.py` requires the LEVIR-MCI split and is not
+needed for a single pair. The `lagent`/InternLM/OpenAI interactive layer is also
+not required.
 
-### Entry points
+The documented predictor cannot run unchanged:
 
-The README documents direct inference as
-[`Multi_change/predict.py`](https://github.com/Chen-Yang-Liu/Change-Agent/blob/main/Multi_change/predict.py),
-invoked with `--imgA_path`, `--imgB_path`, and `--mask_save_path`. It calls both
-`generate_change_caption()` and `change_detection()`. The README command has a
-typo: its `--imgB_path` example repeats `{imgA_path}`.
+- nested argument parsers reject the documented outer arguments;
+- default paths are developer-specific Windows paths;
+- CUDA placement is hard-coded in the predictor, positional embeddings, and
+  caption decoder;
+- its non-256 resize path transposes to CHW before OpenCV resizing;
+- it imports legacy MMCV/MMseg/timm helpers for operations available locally;
+- checkpoint loads omit `map_location` and restricted loading.
 
-The documented dataset evaluator is `Multi_change/test.py`. It requires the
-LEVIR-MCI test split and reference captions, so it is not the entry point for a
-single user-supplied pair.
+SatQuery therefore uses one parser, validates exact 256 × 256 RGB inputs,
+derives temporary tensor placement from existing tensors, replaces the small
+legacy helper surface, and uses restricted CPU-first checkpoint loading. The
+tracked `scripts/patch_change_agent.py` accepts only the pinned source revision
+and known original/already-patched file hashes, then verifies the resulting
+hashes. `scripts/prepare_change_agent.sh` reconstructs the ignored checkout and
+assets from a fresh SatQuery checkout.
 
-The interactive agent examples (`try_chat.py` and `web_demo.py`) wrap the visual
-model in `lagent` and configure either an OpenAI API model or a 7B InternLM model,
-plus web search. That orchestration is not needed to run the MCI mask/caption
-heads and is out of v1 scope.
+## Required artifacts and identities
 
-The direct script is not runnable as documented without modification:
+| Artifact | Source identity | Bytes | SHA-256 |
+| --- | --- | ---: | --- |
+| Change-Agent source | revision `68cbaa7f388b36e4fc10872f7a2911482d26ae5b` | sparse checkout | pinned by Git |
+| `MCI_model.pth` | official Hugging Face model repository | 913,762,855 | `34c6926342c40fdd6d50b43d50257cb46cb6b61763448de9ee551828a64b3eb9` |
+| `mit_b1.pth` | Change-Agent revision above | 54,683,828 | `26f8b1a980ad08ddda46f82ba5008b2f6322f11939d59313285c4b477bfe60b1` |
+| `vocab.json` | Change-Agent revision above | 6,980 | `c9323565663797aac437e1ad4cd5f0f0a7da8b08d8d438bcfa70708ddcca8fc5` |
+| before example | RSICC revision `d1505e514c450c3728782ca723e82761e70bafd3`, `Example/A/train_000016.png` | 114,622 | `8e5d586a4d6af2c658591fd2b9b16142fc9d26100f76ba58069f90de623668f7` |
+| after example | same revision, `Example/B/train_000016.png` | 120,084 | `c92e9b37043c9fec9ef9cbfba6c2b4b4d40f3be2546efd314cfe70a9ed00a3fc` |
 
-- Its outer parser accepts the three image arguments, then `Change_Perception`
-  calls a second `parse_args()` using a parser that does not accept them. Normal
-  documented arguments therefore become “unrecognized arguments.”
-- Its defaults for `list_path` and sample images are developer-specific Windows
-  paths.
-- The result directory option is defined but the direct mask path is separate.
+Only these model assets and example images were obtained. The full dataset and
+all external language models remain absent.
 
-### Required files and sizes
+Before loading, PyTorch's unsafe-global scanner reported no unsafe globals in
+the MCI checkpoint. It was then loaded with
+`torch.load(map_location="cpu", weights_only=True)` and validated as exactly
+three string-to-tensor state dictionaries. The older MiT-B1 file cannot be
+scanned by that newer ZIP-checkpoint scanner, but restricted
+`weights_only=True`, CPU-mapped loading succeeded; it was never unrestricted.
 
-| File | Purpose | Published size |
-| --- | --- | ---: |
-| [`MCI_model.pth`](https://huggingface.co/lcybuaa/Change-Agent/blob/main/MCI_model.pth) | Encoder, attentive encoder, and caption decoder state dictionaries | 914 MB |
-| [`mit_b1.pth`](https://github.com/Chen-Yang-Liu/Change-Agent/blob/main/Multi_change/model/pretrained/mit_b1.pth) | SegFormer MiT-B1 initializer loaded during encoder construction | 52.2 MB |
-| [`vocab.json`](https://github.com/Chen-Yang-Liu/Change-Agent/blob/main/Multi_change/data/LEVIR_MCI/vocab.json) | 468-token caption vocabulary, including special tokens | 6.82 KB |
+## Preprocessing and outputs
 
-The Hugging Face page publishes SHA-256
-`34c6926342c40fdd6d50b43d50257cb46cb6b61763448de9ee551828a64b3eb9`
-for `MCI_model.pth`. It is a PyTorch pickle-bearing file, so it must be obtained
-only from the official repository and hash-checked before loading.
+The adapter preserves the official normalization. Each uint8 RGB image is
+converted to float32 without dividing by 255, then each channel uses:
 
-As written, encoder construction loads `mit_b1.pth` before the MCI encoder state
-is loaded. It may be redundant if `encoder_dict` is complete, but removing that
-requirement cannot be considered safe until the checkpoint keys are inspected
-in the real test. The prediction import graph also needs the upstream `model/`,
-`utils_tool/`, and `eval_func/` source trees. Dataset images, split lists, and
-caption tokens are not required for direct prediction.
+- mean: `[0.39073, 0.38623, 0.32989] × 255`
+- standard deviation: `[0.15329, 0.14628, 0.13648] × 255`
 
-For context only, the separate
-[LEVIR-MCI dataset repository](https://huggingface.co/datasets/lcybuaa/LEVIR-MCI/tree/main)
-is 2.77 GB. It was not downloaded and is not needed for the proposed first run.
+HWC is transposed to CHW and a batch dimension is added. There is no resize,
+registration, reprojection, or alignment check.
 
-### Exact preprocessing
+The mask values are the upstream classes:
 
-The direct prediction code:
-
-1. Reads each file with `imageio.v2.imread`, which yields RGB ordering for
-   ordinary RGB PNG/JPEG inputs.
-2. Converts to NumPy `float32` without dividing by 255.
-3. Transposes HWC to CHW.
-4. Per channel, subtracts
-   `[0.39073, 0.38623, 0.32989] × 255` and divides by
-   `[0.15329, 0.14628, 0.13648] × 255`.
-5. Wraps each array as a `torch.FloatTensor` and adds a batch dimension, yielding
-   `(1, 3, 256, 256)` for valid first-test inputs.
-
-The training dataset loader uses the same channel statistics. The predictor's
-resize branch is defective: it transposes to CHW and then calls OpenCV resize,
-which interprets the dimensions as HWC. The first experiment must use exact
-256 × 256 inputs. A later adapter should resize in HWC before transposing and
-record the interpolation policy.
-
-There is no validation for channel count, bit depth, alignment, image order, or
-matching dimensions upstream. SatQuery must add it.
-
-### Mask and caption semantics
-
-The attentive encoder emits three logits per pixel. `argmax` maps them to:
-
-| Value | Meaning | Upstream training label | Upstream rendered color |
+| Value | Meaning | Training value | Display color |
 | ---: | --- | ---: | --- |
 | 0 | background / neither target class | 0 | black |
-| 1 | road change | 128 → 1 | yellow (`[0,255,255]` written as OpenCV BGR) |
-| 2 | building change | 255 → 2 | red (`[0,0,255]` written as OpenCV BGR) |
+| 1 | road change | 128 mapped to 1 | yellow |
+| 2 | building change | 255 mapped to 2 | red |
 
-Upstream saves only the rendered three-channel mask from `predict.py`; it does
-not create an overlay. Its return-value comment incorrectly says the returned
-indexed array has shape `(256,256,3)`.
+Caption decoding is greedy for at most 41 positions, removes `<START>`,
+`<END>`, and `<NULL>`, and uses the bundled 468-token vocabulary. It is a
+separate learned head. The caption must not be treated as a textual derivation
+or validation of the predicted mask.
 
-Captioning is part of the same MCI model. The decoder greedily generates up to
-41 token positions, removes `<START>`, `<END>`, and `<NULL>`, and maps IDs through
-the bundled 468-token vocabulary. Direct prediction needs the MCI checkpoint
-and `vocab.json`, but no reference caption, full dataset, OpenAI API, InternLM,
-or other language model. Reference captions and Java-backed METEOR are relevant
-to evaluation, not one-pair prediction.
+## CPU experiment results
 
-### Inference dependencies
+Command:
 
-The upstream
-[`requirement.txt`](https://github.com/Chen-Yang-Liu/Change-Agent/blob/main/Multi_change/requirement.txt)
-documents Python 3.9 and pins CUDA 11.8 builds of PyTorch 2.0.1, torchvision
-0.15.2, and torchaudio 2.0.2. It also pins NumPy, OpenCV, MMCV, MMEngine,
-MMsegmentation, Pillow, pandas, PyArrow, Transformers, OpenAI, OpenDataLab, and
-tqdm.
+```sh
+.venv/bin/python scripts/run_change_agent.py \
+  --before data/input/before.png \
+  --after data/input/after.png \
+  --checkpoint weights/MCI_model.pth \
+  --output-dir outputs/change-agent-cpu \
+  --device cpu
+```
 
-For direct MCI prediction, source inspection verifies these direct third-party
-imports: PyTorch, torchvision, NumPy, OpenCV, MMCV, MMsegmentation, `einops`,
-`imageio`, scikit-image, and `timm`. The last four are omitted from upstream's
-requirements. Conversely, the direct prediction graph does not import
-torchaudio, OpenAI, OpenDataLab, pandas, PyArrow, Transformers, or MMEngine;
-they are excluded from this project's [`requirements.in`](../requirements.in).
-Transitive packages will still be resolved by the installer.
+The final run succeeded. Logits had shape `(1, 3, 256, 256)`, were finite, and
+ranged from -44.996246337890625 to 67.92454528808594. The indexed mask had
+shape `(256, 256)`, mode `L`, and only values `{0, 2}`:
 
-This inventory has not been installed or locked. In particular, MMCV 1.3.1 and
-MMsegmentation 0.13.0 are legacy releases, while current MMCV documentation
-notes that Apple Silicon requires PyTorch 1.13 or newer and may require a source
-build. The default model uses only `mmcv.runner.load_checkpoint` and
-`mmseg.utils.get_root_logger` from those frameworks, so replacing those two
-imports with local equivalents may be safer than compiling old MMCV; that must
-be demonstrated, not assumed.
+| Class | Pixels | Fraction |
+| --- | ---: | ---: |
+| background (0) | 59,027 | 90.0681% |
+| road change (1) | 0 | 0% |
+| building change (2) | 6,509 | 9.9319% |
 
-### CUDA, CPU, and MPS
+Model-generated caption: **“some houses are built along the road”**. This is an
+unverified caption-head claim, not a mask-derived fact.
 
-Mac compatibility is not supplied upstream. CUDA is hard-coded in all three
-execution layers:
+Visual inspection found that the predicted red regions broadly cover the row
+of houses present in the after image. This is a qualitative inspection only.
+The example has no matching reference mask, so no IoU, F1, accuracy, or other
+quality metric was calculated.
 
-- `predict.py` sends the encoder, attentive encoder, decoder, and both input
-  tensors through `.cuda()`.
-- `model_encoder_att.py` creates positional index tensors with `.cuda()`.
-- `model_decoder.py` creates target, mask, start-token, sequence, and beam-search
-  tensors with `.cuda()`.
-- `torch.load()` is called without `map_location`, which can fail on a machine
-  without the device on which the checkpoint tensors were saved.
+The repeated CPU run produced the same mask distribution, caption, and indexed
+mask SHA-256 (`120e179042b35bd84b6f999a8006d145ca16e2add118ceebe47ff7a5112aec18`).
 
-CPU should be structurally possible after device-neutral changes because the
-model is composed mainly of standard convolutions, transposed convolutions,
-normalization, attention, embeddings, interpolation, and tensor operations.
-That is a code-based assessment, not a successful inference result.
+### Parameter counts
 
-PyTorch's official [MPS backend documentation](https://docs.pytorch.org/docs/stable/notes/mps.html)
-shows the required `torch.backends.mps.is_built()` and `is_available()` checks.
-The M4/macOS combination is eligible in principle, but individual operators,
-memory use, old PyTorch behavior, and numerical parity remain untested. The
-environment script will report these checks once PyTorch is installed.
+Counts use `Parameter.numel()` and de-duplicate by Python object identity both
+within each component and across components:
 
-## Licences and usage constraints
+| Active component | Parameter tensors | Parameters |
+| --- | ---: | ---: |
+| image encoder | 176 | 13,151,424 |
+| attentive/change encoder | 750 | 109,686,659 |
+| caption decoder | 42 | 7,664,596 |
+| **unique total** | **968** | **130,502,679** |
 
-These are separate artifacts and must not be conflated:
+There are zero parameter tensors shared across the three top-level components,
+so the component sum equals the unique total. The checkpoint contains 942
+additional attentive-encoder keys that upstream ignores with `strict=False`;
+there were no missing active keys. Those unused checkpoint entries are not
+counted as model parameters.
 
-- **Code:** the repository contains an
-  [MIT licence file](https://github.com/Chen-Yang-Liu/Change-Agent/blob/main/LICENSE.txt),
-  but its README also says the code “can be used for academic purposes only.”
-  That extra statement conflicts with the permission language in MIT. Treat
-  commercial use as unresolved and ask the authors or counsel before shipping.
-- **Checkpoint:** the Hugging Face model repository declares `apache-2.0` in
-  its model-card metadata. It supplies no fuller artifact-specific terms beyond
-  the link back to the code repository, so the interaction with the repository's
-  academic-only statement is unresolved.
-- **Dataset:** the LEVIR-MCI Hugging Face repository has empty/missing YAML
-  metadata and exposes no licence file or licence identifier. Its page links
-  back to Change-Agent, but that is not an explicit dataset grant. Treat the
-  dataset licence as unspecified. The earlier LEVIR-CC repository also does not
-  display a licence. Do not redistribute or use dataset samples commercially
-  until permission is clarified.
+### Timing and memory
+
+Final-run wall times were 1.123 s model load, 1.117 s inference, 0.018 s output
+save, and 3.443 s end-to-end. These are single-run observations, not a
+benchmark.
+
+The OS-reported process maximum resident set size after the run was
+1,672,019,968 bytes (about 1.56 GiB), up from 202,227,712 bytes before model
+loading. This is process peak RSS, not Python allocation tracking and not an
+incremental model-only measurement. macOS `memory_pressure` reported 33% free
+before and 35% after; that is system-wide state. No MPS allocation measurement
+exists because MPS was unavailable.
+
+PyTorch emitted a deprecation warning about mixed key-padding and attention-mask
+types in the upstream decoder. It did not stop inference but should be resolved
+before treating newer PyTorch versions as validated.
+
+## MPS attempt
+
+The same command with `--output-dir outputs/change-agent-mps --device mps`
+exited with status 2 and:
+
+```text
+error: MPS was requested but torch.backends.mps.is_available() is false
+```
+
+Because failure occurred before model loading, no MPS mask or caption was
+created. CPU/MPS pixel agreement and caption differences are therefore not
+available; no CPU fallback was silently enabled.
+
+## Dependencies
+
+The patched inference graph directly requires PyTorch, NumPy, Pillow, and
+einops. The tested versions are pinned in `requirements.in`. OpenCV, imageio,
+scikit-image, torchvision, MMCV, MMsegmentation, timm, torchaudio, lagent,
+Transformers, and an external LLM are not imported by this path.
+
+## Licences and unresolved permissions
+
+- **Code:** the Change-Agent repository includes an MIT licence file, while its
+  README additionally says the code is for academic purposes only. Those terms
+  conflict; commercial use remains unresolved.
+- **Checkpoint:** the Hugging Face model card declares Apache-2.0, but also
+  points back to the project. Interaction with the repository's academic-only
+  statement remains unresolved.
+- **Example/dataset:** the RSICC example and LEVIR-MCI repositories expose no
+  explicit dataset licence. The two images are retained only in ignored local
+  storage for this academic experiment and must not be redistributed without
+  permission.
 
 This is an engineering inventory, not legal advice.
 
-## Blockers before calling the model feasible
+## Remaining blockers
 
-1. Installability of the minimal dependency set on arm64/Python 3.9 is unknown.
-2. CPU execution needs device-neutral patches and one complete forward pass.
-3. MPS operator coverage, peak unified-memory use, speed, and output parity are
-   unknown.
-4. Checkpoint contents and key completeness have not been inspected; doing so
-   requires the 914 MB download explicitly deferred from this task.
-5. The upstream argument parsing and non-256 resize path must be corrected.
-6. A real pair must confirm mask dimensions/classes and intelligible caption
-   decoding.
-7. Code/checkpoint/dataset usage terms need resolution for any non-research use.
-
-## Proposed first inference experiment
-
-Use one user-supplied or separately licensed, already aligned 256 × 256 RGB PNG
-pair—ideally one obvious building or road change and no clouds. Do not download
-LEVIR-MCI.
-
-1. In the existing Python 3.9 `.venv`, attempt the minimal dependency install
-   and record every resolved version. If legacy MMCV fails, replace only its two
-   used helpers rather than broadening the dependency stack.
-2. Fetch the official source at a recorded commit, the 914 MB MCI checkpoint,
-   the 52.2 MB MiT-B1 file, and the 6.82 KB vocabulary. Verify the published MCI
-   SHA-256 before deserialization. Do not fetch `lagent`, InternLM, or the dataset.
-3. Add a thin local adapter that has one argument parser, validates RGB 256 ×
-   256 inputs, uses `torch.load(..., map_location=device)`, derives every new
-   tensor's device from existing tensors, and runs under `torch.inference_mode()`.
-4. Run CPU first and save the raw `{0,1,2}` mask, fixed-color mask, post-image
-   overlay, caption, and run record. Record wall time and peak memory.
-5. If CPU succeeds, run the identical pair on MPS. Compare the exact mask (and,
-   if different, class-wise pixel counts), caption, time, and memory. Only enable
-   `PYTORCH_ENABLE_MPS_FALLBACK=1` if required, and record that fallback.
-
-The next implementation task should begin with dependency installation and
-checkpoint download approval, then execute steps 2–4 on one supplied pair.
+1. MPS availability and operator compatibility have not been demonstrated.
+2. Accuracy is unmeasured without a licensed matching reference mask and
+   verified class mapping.
+3. The upstream decoder warning should be corrected and regression-tested for
+   future PyTorch releases.
+4. Code, checkpoint, and example-image permissions need clarification before
+   commercial use or redistribution.

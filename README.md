@@ -1,43 +1,73 @@
 # SatQuery AI
 
-SatQuery AI is an early-stage satellite change-analysis project. The first
-prototype will take two already aligned optical images of the same place and
-produce a semantic change mask, a visual overlay, and—when the selected model
-supports it—a short change caption.
+SatQuery AI is an early satellite change-analysis prototype. It accepts two
+already aligned optical images of the same place and runs the official
+Change-Agent MCI architecture to produce a three-class change mask, visual
+outputs, and a model-generated change caption.
 
 ## Current status
 
-The repository currently contains the v1 scope, a feasibility review of the
-official Change-Agent implementation, and a dependency-free environment check.
-No model code, application code, checkpoint, language model, or dataset has
-been downloaded or added.
+Real CPU inference succeeds on an Apple M4 using Python 3.11.17 and native
+arm64 PyTorch 2.14.1. The verified example produced a 256 × 256 indexed mask
+containing background (`0`) and building change (`2`) and the caption “some
+houses are built along the road.” The caption is a separate model-head output,
+not a fact derived from the mask.
 
-Change-Agent is a plausible research baseline because its MCI checkpoint has a
-joint three-class change-detection branch and caption decoder. It is not ready
-to run on this Mac unchanged: upstream hard-codes CUDA, has command-line and
-resize defects in its prediction path, and relies on an old OpenMMLab stack.
-See [the feasibility report](docs/model-feasibility.md) for the evidence and
-the proposed first experiment.
+MPS inference is not currently available in this process:
+`torch.backends.mps.is_built()` is true, but `is_available()` is false. The
+CPU path remains the supported prototype path. Accuracy has not been measured
+because the selected official example does not include a matching reference
+mask.
 
-## Local environment
+## Reproduce the experiment
 
-The selected isolation boundary is a project-local `.venv` using Python 3.9,
-matching Change-Agent's documented Python version. On the investigated machine
-it was created from `/usr/bin/python3` (Python 3.9.6). No inference packages are
-installed yet.
+Create a project-local Python 3.11 environment and install only the tested
+direct dependencies. Do not install these globally.
 
 ```sh
-/usr/bin/python3 -m venv .venv
-source .venv/bin/activate
-python scripts/check_environment.py
+/opt/homebrew/bin/python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements.in
+.venv/bin/python scripts/check_environment.py
 ```
 
-[`requirements.in`](requirements.in) is a minimal, evidence-based inventory
-for the direct MCI inference graph. It is not a tested lock file; installing it
-is deliberately deferred to the real-inference experiment because the legacy
-MMCV/MMseg combination and Apple Silicon still need validation.
+Fetch the pinned upstream source, required model assets, and the two small
+academic-example images, verify their hashes, and apply the tracked
+compatibility transformation:
 
-## Project documents
+```sh
+./scripts/prepare_change_agent.sh
+```
+
+The preparation script is idempotent: existing verified artifacts are reused.
+It does not download the LEVIR-MCI dataset or an external language model. All
+downloaded code, weights, sample data, and generated outputs remain ignored by
+Git. The sample repository does not state a dataset licence; use it only for
+this academic experiment and do not redistribute it until permission is
+clarified.
+
+Run the command that succeeded locally:
+
+```sh
+.venv/bin/python scripts/run_change_agent.py \
+  --before data/input/before.png \
+  --after data/input/after.png \
+  --checkpoint weights/MCI_model.pth \
+  --output-dir outputs/change-agent-cpu \
+  --device cpu
+```
+
+The adapter rejects unreadable, non-RGB, or non-256 × 256 inputs. It performs
+no resizing or registration. A successful run writes `class_mask.png`,
+`color_mask_with_legend.png`, `overlay.png`, `comparison.png`, `caption.txt`,
+and `run.json` under the selected output directory.
+
+Run the lightweight tests without downloading or loading model weights:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+## Documentation
 
 - [v1 prototype scope](docs/v1-scope.md)
-- [Change-Agent feasibility](docs/model-feasibility.md)
+- [model feasibility and first inference](docs/model-feasibility.md)
