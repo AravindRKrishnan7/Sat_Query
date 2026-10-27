@@ -75,9 +75,11 @@ Run the lightweight tests without downloading or loading model weights:
 ## Compare vegetation index between dates
 
 NDVI needs the Sentinel-2 red (B04) and near-infrared (B08) surface-reflectance
-bands. An RGB PNG is insufficient: it has no NIR channel and normally discards
-the radiometric, no-data, CRS, transform, and quality-mask metadata needed for
-a defensible calculation.
+bands. The comparison figure also accepts native B03 and B02 reflectance bands
+and combines them with B04 for true colour. An RGB PNG is insufficient as an
+analysis input: it has no NIR channel and normally discards the radiometric,
+no-data, CRS, transform, and quality-mask metadata needed for a defensible
+calculation.
 
 Copy [the example configuration](configs/vegetation.example.json), replace its
 paths and provenance placeholders with two prepared, same-grid Level-2A
@@ -96,18 +98,31 @@ A fixed credential-free real example can be prepared and run with:
   --config configs/vegetation.real-example.json
 ```
 
-The preparation script performs no live search: it reads a 256 × 256 native
-10 m window (and corresponding 128 × 128 native 20 m SCL) from six pinned
-public Earth Search COG assets over Bengaluru. Downloaded rasters remain
-ignored by Git; exact product IDs, asset URLs, processing baselines, window,
-scale/offset, and usage terms are tracked in the configuration.
+The preparation script performs no live search: it reads the same 256 × 256
+native 10 m window from B02, B03, B04, and B08 (plus the corresponding 128 ×
+128 native 20 m SCL) for two pinned public Earth Search acquisitions over
+Bengaluru. Downloaded rasters remain ignored by Git; exact product IDs, asset
+URLs, processing baselines, window, scale/offset, and usage terms are tracked
+in the configuration.
 
 Each invocation creates a new timestamped directory beneath `output_root` and
 writes quality-masked and raw numerical NDVI GeoTIFFs, a delta GeoTIFF,
 common-valid and interpretation masks, a comparison PNG, `run.json`, and
-`summary.txt`. It rejects mismatched analysis grids rather than resizing them.
-A 20 m SCL mask may be placed on the 10 m analysis grid only by the explicitly
-configured categorical nearest-neighbour operation.
+`summary.txt`. The PNG has same-date true-colour before/after images above the
+before NDVI, after NDVI, and NDVI-difference panels. B02/B03/B04 are required
+to match the analysis grid exactly. Both RGB panels use the same display-only
+reflectance range (`0.00–0.30`) and gamma (`2.2`); these adjustments never feed
+back into NDVI, masks, GeoTIFFs, or statistics. The workflow rejects mismatched
+spectral grids rather than resizing them. A 20 m SCL mask may be placed on the
+10 m analysis grid only by the explicitly configured categorical
+nearest-neighbour operation.
+
+The command prints its new output directory. Open only its comparison image in
+Preview, for example:
+
+```sh
+open -a Preview outputs/vegetation-real/run-YYYYMMDDTHHMMSSZ/comparison.png
+```
 
 The default example threshold of ±0.1 is an exploratory starting point, not a
 universal change threshold. Output classes describe NDVI increase, decrease,

@@ -2,7 +2,7 @@
 """Download fixed, small Earth Search COG windows for the documented real example.
 
 This is deliberately not a live catalog search. It reads one 2.56 km square
-window from six pinned public assets and writes prepared local GeoTIFFs.
+window from ten pinned public assets and writes prepared local GeoTIFFs.
 """
 
 from __future__ import annotations
@@ -39,6 +39,8 @@ SAMPLES = {
     },
 }
 BANDS = {
+    "B02": {"window": Window(7922, 6570, 256, 256), "dtype": "uint16", "resolution": 10},
+    "B03": {"window": Window(7922, 6570, 256, 256), "dtype": "uint16", "resolution": 10},
     "B04": {"window": Window(7922, 6570, 256, 256), "dtype": "uint16", "resolution": 10},
     "B08": {"window": Window(7922, 6570, 256, 256), "dtype": "uint16", "resolution": 10},
     "SCL": {"window": Window(3961, 3285, 128, 128), "dtype": "uint8", "resolution": 20},
@@ -53,7 +55,7 @@ def read_json(url: str) -> dict:
 def prepare() -> None:
     expected_crs = "EPSG:32643"
     collection = read_json(STAC_COLLECTION_URL)
-    for asset_key in ("red", "nir"):
+    for asset_key in ("blue", "green", "red", "nir"):
         band = collection["item_assets"][asset_key]["raster:bands"][0]
         if (float(band["scale"]), float(band["offset"])) != (0.0001, 0.0):
             raise RuntimeError(f"Earth Search collection scaling changed for {asset_key}: {band}")
@@ -67,7 +69,13 @@ def prepare() -> None:
             directory.mkdir(parents=True, exist_ok=True)
             for identity, specification in BANDS.items():
                 url = f"{sample['prefix']}/{identity}.tif"
-                asset_key = {"B04": "red", "B08": "nir", "SCL": "scl"}[identity]
+                asset_key = {
+                    "B02": "blue",
+                    "B03": "green",
+                    "B04": "red",
+                    "B08": "nir",
+                    "SCL": "scl",
+                }[identity]
                 if item["assets"][asset_key]["href"] != url:
                     raise RuntimeError(f"pinned STAC asset href changed for {identity}: {item_url}")
                 output = directory / f"{identity}.tif"
@@ -78,14 +86,14 @@ def prepare() -> None:
                         raise RuntimeError(f"unexpected source dtype/nodata: {url}")
                     source_scale = float(source.scales[0])
                     source_offset = float(source.offsets[0])
-                    if identity in {"B04", "B08"} and (source_scale, source_offset) != (1.0, 0.0):
+                    if identity in {"B02", "B03", "B04", "B08"} and (source_scale, source_offset) != (1.0, 0.0):
                         raise RuntimeError(
                             f"pinned source COG header changed from audited neutral scale/offset (1.0, 0.0) "
                             f"to ({source_scale}, {source_offset}): {url}"
                         )
                     prepared_scale, prepared_offset = (
                         (sample["reflectance_scale"], sample["reflectance_offset"])
-                        if identity in {"B04", "B08"}
+                        if identity in {"B02", "B03", "B04", "B08"}
                         else (source_scale, source_offset)
                     )
                     resolution = abs(source.transform.a)

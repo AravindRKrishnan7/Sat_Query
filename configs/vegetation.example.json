@@ -21,6 +21,26 @@
       "scale_offset_source": "Replace with the exact product/provider metadata source; do not assume this example offset applies to derived COGs.",
       "nodata": 0
     },
+    "true_color": {
+      "green": {
+        "path": "../data/vegetation/before/B03.tif",
+        "band": "B03",
+        "unit": "surface_reflectance",
+        "scale": 0.0001,
+        "offset": -0.1,
+        "scale_offset_source": "Replace with the exact product/provider metadata source; do not assume this example offset applies to derived COGs.",
+        "nodata": 0
+      },
+      "blue": {
+        "path": "../data/vegetation/before/B02.tif",
+        "band": "B02",
+        "unit": "surface_reflectance",
+        "scale": 0.0001,
+        "offset": -0.1,
+        "scale_offset_source": "Replace with the exact product/provider metadata source; do not assume this example offset applies to derived COGs.",
+        "nodata": 0
+      }
+    },
     "quality": {
       "path": "../data/vegetation/before/SCL.tif",
       "type": "SCL",
@@ -54,6 +74,26 @@
       "offset": -0.1,
       "scale_offset_source": "Replace with the exact product/provider metadata source; do not assume this example offset applies to derived COGs.",
       "nodata": 0
+    },
+    "true_color": {
+      "green": {
+        "path": "../data/vegetation/after/B03.tif",
+        "band": "B03",
+        "unit": "surface_reflectance",
+        "scale": 0.0001,
+        "offset": -0.1,
+        "scale_offset_source": "Replace with the exact product/provider metadata source; do not assume this example offset applies to derived COGs.",
+        "nodata": 0
+      },
+      "blue": {
+        "path": "../data/vegetation/after/B02.tif",
+        "band": "B02",
+        "unit": "surface_reflectance",
+        "scale": 0.0001,
+        "offset": -0.1,
+        "scale_offset_source": "Replace with the exact product/provider metadata source; do not assume this example offset applies to derived COGs.",
+        "nodata": 0
+      }
     },
     "quality": {
       "path": "../data/vegetation/after/SCL.tif",

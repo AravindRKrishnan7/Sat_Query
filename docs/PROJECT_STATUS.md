@@ -113,12 +113,41 @@ Raw numerically valid before/after NDVI rasters are saved without SCL masking.
 The original quality-masked outputs remain, and a separate common
 interpretation mask is added. Nothing is clipped.
 
+## Improved comparison visualisation
+
+Newest verified run: `outputs/vegetation-real/run-20261027T173607Z`
+
+The fixed preparation now also reads B02 and B03 from the same two pinned STAC
+items, exact 2.56 km extent, and 10 m analysis grid as B04/B08. For each date,
+the script verified the exact STAC asset URL, `uint16`/nodata-0 raster contract,
+neutral remote COG header scale/offset 1/0, and the provider-specific audited
+reflectance conversion `stored * 0.0001 + 0.0`. All 65,536 RGB pixels are
+band-valid on each date.
+
+The new PNG uses B04/B03/B02 for true colour in its top row and retains before
+NDVI, after NDVI, and after-minus-before NDVI in its bottom row. Both true-colour
+panels use the same display-only reflectance range 0.00–0.30 and gamma 2.2.
+The execution record reports 536 before and 733 after channel values above that
+display range; this clipping affects PNG colours only. It does not affect the
+analysis arrays, masks, GeoTIFFs, or statistics.
+
+The before, after, and delta NDVI GeoTIFF SHA-256 hashes exactly match the
+scaling-corrected baseline run. All broad and vegetation-only statistics are
+also unchanged. The figure labels the latter as applying only to the 7,504
+pixels classified as SCL 4 vegetation on both dates and explicitly avoids
+claiming vegetation gain/loss or proven health change. Prior output directories
+remain preserved.
+
 ## Verification and remaining limitations
 
-- 17 lightweight tests pass, including all existing Change-Agent tests.
+- 18 lightweight tests pass, including all existing Change-Agent tests and a
+  regression check that rejects an RGB band on a different grid.
 - Regression coverage now reproduces the double-offset failure and rejects a
   configured offset that conflicts with explicit raster metadata.
-- The corrected comparison image was visually inspected.
+- The improved two-row comparison image was visually inspected; it contains no
+  generated or unrelated imagery.
+- True colour is a contextual rendering, not calibrated colourimetry. Its fixed
+  stretch and gamma are documented display choices.
 - No ground truth, field measurements, reference change labels, causal
   analysis, or multi-date trend validation is available.
 - SCL is an observation-quality and coarse land-cover classification, not

@@ -21,6 +21,26 @@
       "scale_offset_source": "Earth Search item earthsearch:boa_offset_applied=true; collection item_assets declares scale 0.0001 and offset 0. Item asset offset -0.1 is inconsistent and intentionally ignored.",
       "nodata": 0
     },
+    "true_color": {
+      "green": {
+        "path": "../data/vegetation/earth-search-bengaluru/before/B03.tif",
+        "band": "B03",
+        "unit": "surface_reflectance",
+        "scale": 0.0001,
+        "offset": 0.0,
+        "scale_offset_source": "Earth Search item earthsearch:boa_offset_applied=true; collection item_assets declares scale 0.0001 and offset 0. Item asset offset -0.1 is inconsistent and intentionally ignored.",
+        "nodata": 0
+      },
+      "blue": {
+        "path": "../data/vegetation/earth-search-bengaluru/before/B02.tif",
+        "band": "B02",
+        "unit": "surface_reflectance",
+        "scale": 0.0001,
+        "offset": 0.0,
+        "scale_offset_source": "Earth Search item earthsearch:boa_offset_applied=true; collection item_assets declares scale 0.0001 and offset 0. Item asset offset -0.1 is inconsistent and intentionally ignored.",
+        "nodata": 0
+      }
+    },
     "quality": {
       "path": "../data/vegetation/earth-search-bengaluru/before/SCL.tif",
       "type": "SCL",
@@ -39,8 +59,10 @@
       "asset_representation": "Offset-applied/harmonised uint16 reflectance values; physical reflectance is stored value multiplied by 0.0001 with no further additive offset.",
       "tile": "43PGQ",
       "scene_cloud_cover_percent": 0.000196,
-      "prepared_window": "B04/B08 source Window(col=7922,row=6570,width=256,height=256); SCL corresponding native 20 m Window(col=3961,row=3285,width=128,height=128)",
+      "prepared_window": "B02/B03/B04/B08 source Window(col=7922,row=6570,width=256,height=256); SCL corresponding native 20 m Window(col=3961,row=3285,width=128,height=128)",
       "asset_urls": {
+        "B02": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/43/P/GQ/2024/2/S2A_43PGQ_20240207_0_L2A/B02.tif",
+        "B03": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/43/P/GQ/2024/2/S2A_43PGQ_20240207_0_L2A/B03.tif",
         "B04": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/43/P/GQ/2024/2/S2A_43PGQ_20240207_0_L2A/B04.tif",
         "B08": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/43/P/GQ/2024/2/S2A_43PGQ_20240207_0_L2A/B08.tif",
         "SCL": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/43/P/GQ/2024/2/S2A_43PGQ_20240207_0_L2A/SCL.tif"
@@ -68,6 +90,26 @@
       "scale_offset_source": "Earth Search item earthsearch:boa_offset_applied=true; collection item_assets declares scale 0.0001 and offset 0. Item asset offset -0.1 is inconsistent and intentionally ignored.",
       "nodata": 0
     },
+    "true_color": {
+      "green": {
+        "path": "../data/vegetation/earth-search-bengaluru/after/B03.tif",
+        "band": "B03",
+        "unit": "surface_reflectance",
+        "scale": 0.0001,
+        "offset": 0.0,
+        "scale_offset_source": "Earth Search item earthsearch:boa_offset_applied=true; collection item_assets declares scale 0.0001 and offset 0. Item asset offset -0.1 is inconsistent and intentionally ignored.",
+        "nodata": 0
+      },
+      "blue": {
+        "path": "../data/vegetation/earth-search-bengaluru/after/B02.tif",
+        "band": "B02",
+        "unit": "surface_reflectance",
+        "scale": 0.0001,
+        "offset": 0.0,
+        "scale_offset_source": "Earth Search item earthsearch:boa_offset_applied=true; collection item_assets declares scale 0.0001 and offset 0. Item asset offset -0.1 is inconsistent and intentionally ignored.",
+        "nodata": 0
+      }
+    },
     "quality": {
       "path": "../data/vegetation/earth-search-bengaluru/after/SCL.tif",
       "type": "SCL",
@@ -86,8 +128,10 @@
       "asset_representation": "Offset-applied/harmonised uint16 reflectance values; physical reflectance is stored value multiplied by 0.0001 with no further additive offset.",
       "tile": "43PGQ",
       "scene_cloud_cover_percent": 0.000098,
-      "prepared_window": "B04/B08 source Window(col=7922,row=6570,width=256,height=256); SCL corresponding native 20 m Window(col=3961,row=3285,width=128,height=128)",
+      "prepared_window": "B02/B03/B04/B08 source Window(col=7922,row=6570,width=256,height=256); SCL corresponding native 20 m Window(col=3961,row=3285,width=128,height=128)",
       "asset_urls": {
+        "B02": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/43/P/GQ/2025/2/S2B_43PGQ_20250206_0_L2A/B02.tif",
+        "B03": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/43/P/GQ/2025/2/S2B_43PGQ_20250206_0_L2A/B03.tif",
         "B04": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/43/P/GQ/2025/2/S2B_43PGQ_20250206_0_L2A/B04.tif",
         "B08": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/43/P/GQ/2025/2/S2B_43PGQ_20250206_0_L2A/B08.tif",
         "SCL": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/43/P/GQ/2025/2/S2B_43PGQ_20250206_0_L2A/SCL.tif"

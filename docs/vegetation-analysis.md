@@ -15,9 +15,11 @@ delta_NDVI = NDVI_after - NDVI_before
 It does no catalog search, download, registration, or analysis-grid
 resampling. It does not use Change-Agent or another model.
 
-Ordinary RGB images are not inputs. RGB lacks B08 near-infrared and usually
-lacks quantitative surface-reflectance values, CRS, affine transform, no-data,
-and pixel-quality information.
+Ordinary RGB images are not analysis inputs. RGB lacks B08 near-infrared and
+usually lacks quantitative surface-reflectance values, CRS, affine transform,
+no-data, and pixel-quality information. Optional native B02/B03 bands can be
+supplied with the already required B04 band to produce a contextual true-colour
+display; they do not enter the NDVI calculation.
 
 ## Product facts and choices
 
@@ -73,6 +75,8 @@ For both `before` and `after`, it requires:
 - an ISO acquisition date;
 - a single-channel numeric B04 GeoTIFF and a single-channel numeric B08
   GeoTIFF;
+- optional single-channel B03 and B02 GeoTIFFs under `true_color`; if present,
+  they must be supplied for both dates, while B04 is reused as red;
 - explicit `surface_reflectance` unit, `scale`, `offset`, `nodata`, and a
   textual `scale_offset_source` for each band;
 - an integer Sentinel-2 Level-2A SCL raster, a documented rule, accepted class
@@ -80,10 +84,11 @@ For both `before` and `after`, it requires:
 - source provenance such as provider, product/STAC item ID, asset URLs, and
   usage terms.
 
-Paths are resolved relative to the configuration. B04 and B08 must have
-identical dimensions, CRS, and affine transform within a date. Both dates must
-also share that exact grid. The workflow never silently registers or resizes
-spectral data.
+Paths are resolved relative to the configuration. B02, B03, B04, and B08 must
+have identical dimensions, CRS, and affine transform within a date when the
+true-colour inputs are configured. Both dates must also share that exact grid.
+Each band has its own explicit scale, offset, nodata, and metadata source. The
+workflow never silently registers or resizes spectral data.
 
 SCL may differ from the analysis grid because the native mask is 20 m while
 B04/B08 are 10 m. It must use the same CRS and fully cover the target grid; the
@@ -107,9 +112,11 @@ area of Bengaluru. Prepare its small native-grid windows without credentials:
 ```
 
 This fixed downloader is not a catalog search. The source rasters and generated
-local chips remain ignored by Git. For each pinned acquisition, it checks that
-the remote COG remains `uint16`, nodata 0, and internally neutral scale/offset
-1/0, then annotates the local copy with the audited `0.0001/0.0` conversion.
+local chips remain ignored by Git. For each pinned acquisition, it checks the
+exact STAC URLs and verifies that B02/B03/B04/B08 remain `uint16`, nodata 0,
+and internally neutral scale/offset 1/0, then annotates each local copy with the
+audited `0.0001/0.0` conversion. The four spectral bands use the same native
+10 m window and analysis grid.
 
 ## Command and outputs
 
@@ -132,12 +139,18 @@ overwriting earlier results. It contains:
   interpretation on both dates);
 - `before_ndvi_raw.tif` and `after_ndvi_raw.tif` (numerically valid NDVI before
   SCL quality filtering, retained for audit rather than summary statistics);
-- `comparison.png` (shared `[-1, 1]` NDVI scale, `[-1, 1]` zero-centred
-  delta scale, invalid pixels in grey, and exact display-saturation counts in
-  the JSON record);
+- `comparison.png` (top-row true-colour before/after; bottom-row before NDVI,
+  after NDVI, and NDVI difference; dates, legend, and a vegetation-only summary
+  for pixels classified SCL 4 on both dates);
 - `run.json` (inputs, provenance, grid, scale/offset, mask rule, validity,
   statistics, runtime, outputs, warnings);
 - `summary.txt` (deterministic interpretation summary).
+
+Both true-colour panels use B04/B03/B02 reflectance with the identical fixed
+display range 0.00–0.30 and gamma 2.2. The execution record stores those
+settings and counts channel values outside the display range. Those values are
+clipped only while making the PNG. RGB adjustments are isolated from the
+analysis arrays and never alter numerical outputs.
 
 Near-zero denominators are invalid, not NDVI zero. The code converts integers
 to float64 before arithmetic, does not replace invalid data with zero, and does
@@ -187,10 +200,12 @@ have `earthsearch:boa_offset_applied=true`, but the preparation/configuration
 applied the contradictory item-level `-0.1` again. Prior output directories are
 preserved for comparison; `run-20261027T165248Z` is the last affected run.
 
-The corrected run is `run-20261027T171413Z`. All 65,536 pixels per date have
-valid B04/B08 data. For both dates there are zero negative reflectances, zero
-zero-reflectance values, zero near-zero denominators at `1e-6`, and zero NDVI
-values outside `[-1, 1]` across every observed SCL class.
+The scaling-corrected baseline run is `run-20261027T171413Z`. The improved
+comparison run is `run-20261027T173607Z`; its three NDVI GeoTIFFs are
+byte-for-byte identical to the corrected baseline. All 65,536 pixels per date
+have valid B04/B08 data. For both dates there are zero negative reflectances,
+zero zero-reflectance values, zero near-zero denominators at `1e-6`, and zero
+NDVI values outside `[-1, 1]` across every observed SCL class.
 
 The broad SCL 4/5/6 intersection has 64,456 pixels (98.35%). Before/after
 mean NDVI is 0.244767/0.259284, median is 0.167017/0.177172, and mean/median
@@ -205,6 +220,13 @@ increased, 485 (6.46%) decreased, and 6,006 (80.04%) were approximately stable.
 Full stored-value percentiles, reflectance ranges, and SCL-class distributions
 are in the corrected `run.json` and summarised in
 [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
+The improved run uses B02/B03/B04 from the same two STAC items, native window,
+extent, CRS, transform, and 10 m grid as the NDVI analysis. All 65,536 RGB
+pixels are band-valid on both dates. Visual inspection confirmed the intended
+two-row layout and portable labels. The 0.00–0.30 display range clips 536
+before and 733 after channel values (out of 196,608 per date); those display
+counts are recorded and do not affect the analysis.
 
 The real run verifies execution and output contracts, not ecological accuracy.
 No ground truth, field measurements, reference change labels, causal analysis,

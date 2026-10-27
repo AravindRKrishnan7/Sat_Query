@@ -79,6 +79,8 @@ class Observation:
     ndvi: np.ndarray
     scl: np.ndarray
     grid: Grid
+    true_color: np.ndarray | None
+    true_color_valid: np.ndarray | None
     resampling_record: dict[str, Any]
     warnings: list[str]
 
@@ -388,6 +390,77 @@ def _observation(
     if not _same_grid(red_grid, nir_grid):
         raise VegetationValidationError(f"{role} B04 and B08 grids do not match; align them before analysis")
 
+    true_color: np.ndarray | None = None
+    true_color_valid: np.ndarray | None = None
+    true_color_record: dict[str, Any] | None = None
+    true_color_config = item.get("true_color")
+    if true_color_config is not None:
+        display = _require_mapping(true_color_config, f"{role}.true_color")
+        _require_keys(display, {"green", "blue"}, f"{role}.true_color")
+        display_red = red_raw.astype(np.float64) * scales["red"][0] + scales["red"][1]
+        display_bands: dict[str, np.ndarray] = {"red": display_red}
+        display_invalid: dict[str, np.ndarray] = {"red": red_invalid | ~np.isfinite(display_red)}
+        display_records: dict[str, Any] = {
+            "red": {
+                "reference": f"{role}.red",
+                "identity": "B04",
+                "note": "The already validated NDVI red reflectance is reused without changing the analysis.",
+            }
+        }
+        for key, identity in (("green", "B03"), ("blue", "B02")):
+            spec = _require_mapping(display[key], f"{role}.true_color.{key}")
+            _require_keys(
+                spec,
+                {"path", "band", "unit", "scale", "offset", "nodata", "scale_offset_source"},
+                f"{role}.true_color.{key}",
+            )
+            if spec["band"] != identity:
+                raise VegetationValidationError(f"{role}.true_color.{key}.band must be exactly {identity}")
+            if spec["unit"] != "surface_reflectance":
+                raise VegetationValidationError(
+                    f"{role}.true_color.{key}.unit must be exactly 'surface_reflectance'"
+                )
+            scale = _number(spec["scale"], f"{role}.true_color.{key}.scale")
+            offset = _number(spec["offset"], f"{role}.true_color.{key}.offset")
+            if scale == 0:
+                raise VegetationValidationError(f"{role}.true_color.{key}.scale must be non-zero")
+            if not isinstance(spec["scale_offset_source"], str) or not spec["scale_offset_source"].strip():
+                raise VegetationValidationError(
+                    f"{role}.true_color.{key}.scale_offset_source must document the metadata source"
+                )
+            path = _resolve_path(spec["path"], base_dir, f"{role}.true_color.{key}.path")
+            raw, invalid, grid, metadata = _open_single_band(
+                path, role, identity, spec["nodata"], scale, offset
+            )
+            if not _same_grid(red_grid, grid):
+                raise VegetationValidationError(
+                    f"{role} true-colour {identity} grid does not match the B04/B08 analysis grid"
+                )
+            reflectance = raw.astype(np.float64) * scale + offset
+            display_bands[key] = reflectance
+            display_invalid[key] = invalid | ~np.isfinite(reflectance)
+            display_records[key] = {
+                **metadata,
+                "identity": identity,
+                "unit_after_scaling": spec["unit"],
+                "scale": scale,
+                "offset": offset,
+                "scale_offset_source": spec["scale_offset_source"],
+            }
+        true_color = np.stack(
+            (display_bands["red"], display_bands["green"], display_bands["blue"]), axis=-1
+        )
+        true_color_valid = ~(
+            display_invalid["red"] | display_invalid["green"] | display_invalid["blue"]
+        )
+        true_color_record = {
+            "purpose": "Display only; these bands and display adjustments do not enter NDVI, masks, or statistics.",
+            "band_order": ["B04", "B03", "B02"],
+            "bands": display_records,
+            "valid_pixels": int(true_color_valid.sum()),
+            "grid": red_grid.record(),
+        }
+
     quality = _require_mapping(item["quality"], f"{role}.quality")
     _require_keys(quality, {"path", "type", "valid_classes", "resampling", "rule"}, f"{role}.quality")
     if quality["type"] != "SCL":
@@ -489,6 +562,7 @@ def _observation(
             "rule": quality["rule"],
             "resampling": resampling_record,
         },
+        "true_color": true_color_record,
         "numerical_diagnostics": diagnostics,
         "valid_pixels_for_date": int(valid.sum()),
     }
@@ -505,6 +579,8 @@ def _observation(
         ndvi,
         scl,
         red_grid,
+        true_color,
+        true_color_valid,
         resampling_record,
         warnings,
     ), record
@@ -584,6 +660,24 @@ def _colorize(values: np.ndarray, low: float, high: float, palette: Sequence[tup
     return Image.fromarray(rgb, mode="RGB")
 
 
+def _true_color_image(
+    reflectance: np.ndarray,
+    valid: np.ndarray,
+    low: float,
+    high: float,
+    gamma: float,
+) -> tuple[Image.Image, dict[str, int]]:
+    normalized = np.clip((reflectance - low) / (high - low), 0.0, 1.0)
+    displayed = np.power(normalized, 1.0 / gamma)
+    rgb = np.rint(displayed * 255.0).astype(np.uint8)
+    rgb[~valid] = (190, 190, 190)
+    return Image.fromarray(rgb, mode="RGB"), {
+        "below_range_values": int(np.count_nonzero(valid[..., None] & (reflectance < low))),
+        "above_range_values": int(np.count_nonzero(valid[..., None] & (reflectance > high))),
+        "excluded_pixels": int(np.count_nonzero(~valid)),
+    }
+
+
 def _draw_colorbar(
     canvas: Image.Image,
     draw: ImageDraw.ImageDraw,
@@ -602,41 +696,151 @@ def _draw_colorbar(
     draw.text((x + width - 35, y + 16), f"{high:.2f}", fill="black")
 
 
-def _comparison_png(path: Path, before: np.ndarray, after: np.ndarray, delta: np.ndarray) -> dict[str, Any]:
+def _comparison_png(
+    path: Path,
+    before: Observation,
+    after: Observation,
+    delta: np.ndarray,
+    interpretation: Mapping[str, Any],
+    threshold: float,
+) -> dict[str, Any]:
     ndvi_palette = ((0.0, (120, 68, 35)), (0.5, (245, 231, 145)), (1.0, (0, 95, 45)))
     delta_palette = ((0.0, (178, 24, 43)), (0.5, (255, 255, 255)), (1.0, (33, 102, 172)))
     delta_limit = 1.0
     panels = (
-        ("Before NDVI", _colorize(before, -1.0, 1.0, ndvi_palette), -1.0, 1.0, ndvi_palette),
-        ("After NDVI", _colorize(after, -1.0, 1.0, ndvi_palette), -1.0, 1.0, ndvi_palette),
-        ("Delta NDVI", _colorize(delta, -delta_limit, delta_limit, delta_palette), -delta_limit, delta_limit, delta_palette),
+        (
+            f"Before NDVI: {before.acquisition_date}",
+            _colorize(before.ndvi, -1.0, 1.0, ndvi_palette),
+            -1.0,
+            1.0,
+            ndvi_palette,
+        ),
+        (
+            f"After NDVI: {after.acquisition_date}",
+            _colorize(after.ndvi, -1.0, 1.0, ndvi_palette),
+            -1.0,
+            1.0,
+            ndvi_palette,
+        ),
+        (
+            "NDVI difference (after - before)",
+            _colorize(delta, -delta_limit, delta_limit, delta_palette),
+            -delta_limit,
+            delta_limit,
+            delta_palette,
+        ),
     )
-    panel_width = max(256, before.shape[1])
-    panel_height = max(256, before.shape[0])
-    canvas = Image.new("RGB", (panel_width * 3, panel_height + 76), "white")
+    panel_width = max(256, before.ndvi.shape[1])
+    panel_height = max(256, before.ndvi.shape[0])
+    has_true_color = before.true_color is not None and after.true_color is not None
+    if has_true_color != (before.true_color_valid is not None and after.true_color_valid is not None):
+        raise VegetationValidationError("true-colour arrays and validity masks are incomplete")
+    top_height = panel_height + 38 if has_true_color else 0
+    footer_y = top_height + panel_height + 72
+    canvas = Image.new("RGB", (panel_width * 3, footer_y + 112), "white")
     draw = ImageDraw.Draw(canvas)
+    true_color_record: dict[str, Any] | None = None
+    if has_true_color:
+        reflectance_low = 0.0
+        reflectance_high = 0.3
+        gamma = 2.2
+        before_rgb, before_counts = _true_color_image(
+            before.true_color, before.true_color_valid, reflectance_low, reflectance_high, gamma
+        )
+        after_rgb, after_counts = _true_color_image(
+            after.true_color, after.true_color_valid, reflectance_low, reflectance_high, gamma
+        )
+        for x, title, image in (
+            (panel_width // 2, f"True colour before: {before.acquisition_date}", before_rgb),
+            (panel_width * 3 // 2, f"True colour after: {after.acquisition_date}", after_rgb),
+        ):
+            draw.text((x + 6, 4), title, fill="black")
+            canvas.paste(image.resize((panel_width, panel_height), Image.Resampling.NEAREST), (x, 20))
+        draw.text(
+            (panel_width // 2 + 6, panel_height + 22),
+            "Same display settings: reflectance 0.00-0.30, gamma 2.2 (display only)",
+            fill="black",
+        )
+        true_color_record = {
+            "band_order": ["B04", "B03", "B02"],
+            "reflectance_display_range": [reflectance_low, reflectance_high],
+            "gamma": gamma,
+            "applied_identically_to_both_dates": True,
+            "resampling": "nearest-neighbour for PNG enlargement only; source rasters remain on the analysis grid",
+            "before_display_counts": before_counts,
+            "after_display_counts": after_counts,
+            "note": (
+                "Reflectance scaling is validated on input. Range clipping and gamma are presentation-only "
+                "and do not affect NDVI, masks, GeoTIFFs, or statistics."
+            ),
+        }
     for index, (title, image, low, high, palette) in enumerate(panels):
         resized = image.resize((panel_width, panel_height), Image.Resampling.NEAREST)
         x = index * panel_width
-        canvas.paste(resized, (x, 20))
-        draw.text((x + 6, 4), title, fill="black")
-        _draw_colorbar(canvas, draw, x + 8, panel_height + 26, panel_width - 16, low, high, palette)
-    draw.rectangle((8, panel_height + 58, 20, panel_height + 70), fill=(190, 190, 190), outline="black")
-    draw.text((24, panel_height + 58), "invalid / not common-valid (delta)", fill="black")
+        y = top_height + 20
+        canvas.paste(resized, (x, y))
+        draw.text((x + 6, top_height + 4), title, fill="black")
+        _draw_colorbar(
+            canvas, draw, x + 8, top_height + panel_height + 26, panel_width - 16, low, high, palette
+        )
+    categories = interpretation["change_categories"]
+    scl_classes = interpretation["scl_classes"]
+    population_label = "Vegetation-only" if scl_classes == [4] else "Interpretation-selected"
+    scl_label = ", ".join(str(value) for value in scl_classes)
+    draw.text((8, footer_y), "NDVI: Normalised Difference Vegetation Index", fill="black")
+    draw.text(
+        (8, footer_y + 14),
+        "Difference: blue = NDVI increased; red = NDVI decreased; white = little difference; grey = excluded pixels.",
+        fill="black",
+    )
+    draw.text(
+        (8, footer_y + 32),
+        f"{population_label} statistics - SCL {scl_label} on BOTH dates ({interpretation['pixels']:,} pixels):",
+        fill="black",
+    )
+    draw.text(
+        (8, footer_y + 46),
+        f"Mean NDVI {interpretation['before_ndvi']['mean']:.3f} -> {interpretation['after_ndvi']['mean']:.3f}; "
+        f"median {interpretation['before_ndvi']['median']:.3f} -> {interpretation['after_ndvi']['median']:.3f}; "
+        f"mean difference {interpretation['delta_ndvi']['mean']:+.3f}.",
+        fill="black",
+    )
+    draw.text(
+        (8, footer_y + 60),
+        f"At +/-{threshold:.2f}: {categories['increased']['fraction']:.1%} increased, "
+        f"{categories['decreased']['fraction']:.1%} decreased, "
+        f"{categories['approximately_stable']['fraction']:.1%} little difference.",
+        fill="black",
+    )
+    draw.text(
+        (8, footer_y + 78),
+        "NDVI differences are not vegetation gain/loss or proof of health change.",
+        fill="black",
+    )
     canvas.save(path)
-    before_saturated = int(np.count_nonzero(np.isfinite(before) & ((before < -1.0) | (before > 1.0))))
-    after_saturated = int(np.count_nonzero(np.isfinite(after) & ((after < -1.0) | (after > 1.0))))
-    delta_saturated = int(np.count_nonzero(np.isfinite(delta) & ((delta < -delta_limit) | (delta > delta_limit))))
+    before_saturated = int(
+        np.count_nonzero(np.isfinite(before.ndvi) & ((before.ndvi < -1.0) | (before.ndvi > 1.0)))
+    )
+    after_saturated = int(
+        np.count_nonzero(np.isfinite(after.ndvi) & ((after.ndvi < -1.0) | (after.ndvi > 1.0)))
+    )
+    delta_saturated = int(
+        np.count_nonzero(np.isfinite(delta) & ((delta < -delta_limit) | (delta > delta_limit)))
+    )
     return {
         "ndvi_display_range": [-1.0, 1.0],
         "delta_display_range": [-delta_limit, delta_limit],
         "invalid_color_rgb": [190, 190, 190],
+        "true_color": true_color_record,
         "display_saturated_pixel_counts": {
             "before_ndvi": before_saturated,
             "after_ndvi": after_saturated,
             "delta_ndvi": delta_saturated,
         },
-        "note": "Only display colors saturate at range endpoints; numerical raster values are never clipped.",
+        "note": (
+            "Only display colors saturate at range endpoints; numerical raster values and statistics are "
+            "never clipped or changed."
+        ),
     }
 
 
@@ -657,6 +861,9 @@ def _summary_text(record: Mapping[str, Any]) -> str:
     interpretation = record["interpretation_results"]
     validity = record["validity"]
     categories = interpretation["change_categories"]
+    interpretation_label = (
+        "Vegetation-only" if record["interpretation"]["scl_classes"] == [4] else "Interpretation-selected"
+    )
     area_line = (
         f"Common-valid area: {record['area']['areas_square_metres']['common_valid']:.2f} square metres; "
         f"interpretation-suitable area: "
@@ -669,13 +876,13 @@ def _summary_text(record: Mapping[str, Any]) -> str:
         f"Dates: {record['dates']['before']} to {record['dates']['after']}\n"
         f"Common valid pixels: {validity['common_valid_pixels']} of {validity['total_pixels']} "
         f"({validity['valid_coverage_percent']:.2f}%)\n"
-        f"Interpretation-suitable pixels (SCL {record['interpretation']['scl_classes']} on both dates): "
+        f"{interpretation_label} pixels (SCL {record['interpretation']['scl_classes']} on BOTH dates): "
         f"{validity['common_interpretation_suitable_pixels']}\n"
-        f"Interpretation-selected before NDVI: mean {interpretation['before_ndvi']['mean']:.6f}, "
+        f"{interpretation_label} before NDVI: mean {interpretation['before_ndvi']['mean']:.6f}, "
         f"median {interpretation['before_ndvi']['median']:.6f}\n"
-        f"Interpretation-selected after NDVI: mean {interpretation['after_ndvi']['mean']:.6f}, "
+        f"{interpretation_label} after NDVI: mean {interpretation['after_ndvi']['mean']:.6f}, "
         f"median {interpretation['after_ndvi']['median']:.6f}\n"
-        f"Interpretation-selected delta NDVI (after - before): mean {interpretation['delta_ndvi']['mean']:.6f}, "
+        f"{interpretation_label} delta NDVI (after - before): mean {interpretation['delta_ndvi']['mean']:.6f}, "
         f"median {interpretation['delta_ndvi']['median']:.6f}\n"
         f"Threshold: +/-{record['threshold']:.6f} (exploratory and configurable)\n"
         f"NDVI increase: {categories['increased']['pixels']} pixels "
@@ -732,6 +939,8 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
         )
     if not _same_grid(before.grid, after.grid):
         raise VegetationValidationError("before and after analysis grids do not match; align them before analysis")
+    if (before.true_color is None) != (after.true_color is None):
+        raise VegetationValidationError("true-colour inputs must be supplied for both dates or neither date")
     if before.acquisition_date >= after.acquisition_date:
         raise VegetationValidationError("before.date must be earlier than after.date")
 
@@ -753,6 +962,23 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
         after.ndvi[interpretation_common] - before.ndvi[interpretation_common]
     )
     interpretation_category_counts = classify_delta(interpretation_delta, threshold)
+    fractions = {
+        name: {"pixels": count, "fraction": count / common_count}
+        for name, count in category_counts.items()
+    }
+    interpretation_fractions = {
+        name: {"pixels": count, "fraction": count / interpretation_count}
+        for name, count in interpretation_category_counts.items()
+    }
+    interpretation_results = {
+        "population": "common interpretation-suitable pixels",
+        "pixels": interpretation_count,
+        "scl_classes": list(interpretation_classes),
+        "before_ndvi": _stats(before.ndvi[interpretation_common]),
+        "after_ndvi": _stats(after.ndvi[interpretation_common]),
+        "delta_ndvi": _stats(interpretation_delta[interpretation_common]),
+        "change_categories": interpretation_fractions,
+    }
     total = int(common.size)
     area_counts = {
         "common_valid": common_count,
@@ -795,7 +1021,9 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
     )
     _write_geotiff(paths["before_ndvi_raw"], before.raw_ndvi, before.grid, FLOAT_NODATA, "float32")
     _write_geotiff(paths["after_ndvi_raw"], after.raw_ndvi, before.grid, FLOAT_NODATA, "float32")
-    visualization = _comparison_png(paths["comparison_png"], before.ndvi, after.ndvi, delta)
+    visualization = _comparison_png(
+        paths["comparison_png"], before, after, delta, interpretation_results, threshold
+    )
     saturated = visualization["display_saturated_pixel_counts"]
     if any(saturated.values()):
         warnings.append(
@@ -804,14 +1032,6 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
             "GeoTIFF values and statistics were retained without clipping."
         )
 
-    fractions = {
-        name: {"pixels": count, "fraction": count / common_count}
-        for name, count in category_counts.items()
-    }
-    interpretation_fractions = {
-        name: {"pixels": count, "fraction": count / interpretation_count}
-        for name, count in interpretation_category_counts.items()
-    }
     elapsed = time.perf_counter() - started
     record: dict[str, Any] = {
         "schema_version": 2,
@@ -866,13 +1086,7 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
             "delta_ndvi": _stats(delta[common]),
             "change_categories": fractions,
         },
-        "interpretation_results": {
-            "population": "common interpretation-suitable pixels",
-            "before_ndvi": _stats(before.ndvi[interpretation_common]),
-            "after_ndvi": _stats(after.ndvi[interpretation_common]),
-            "delta_ndvi": _stats(interpretation_delta[interpretation_common]),
-            "change_categories": interpretation_fractions,
-        },
+        "interpretation_results": interpretation_results,
         "area": area,
         "area_omission_reason": area_warning,
         "visualization": visualization,

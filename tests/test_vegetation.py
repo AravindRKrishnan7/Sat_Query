@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -123,9 +124,27 @@ class RasterWorkflowTests(unittest.TestCase):
         after_nir = np.asarray([[8000, 4000, 6000], [6000, 6000, 6000]], dtype=np.uint16)
         scl = np.asarray([[4, 4, 4], [4, 4, 8]], dtype=np.uint8)
         files = {
+            "before_blue": self.write_raster(
+                "before-blue.tif", np.full((2, 3), 1800, dtype=np.uint16), band_id="B02"
+            ),
+            "before_green": self.write_raster(
+                "before-green.tif", np.full((2, 3), 1900, dtype=np.uint16), band_id="B03"
+            ),
             "before_red": self.write_raster("before-red.tif", red, band_id="B04"),
             "before_nir": self.write_raster("before-nir.tif", before_nir, band_id="B08"),
             "before_scl": self.write_raster("before-scl.tif", scl),
+            "after_blue": self.write_raster(
+                "after-blue.tif",
+                np.full((2, 3), 1700, dtype=np.uint16),
+                transform=after_transform,
+                band_id="B02",
+            ),
+            "after_green": self.write_raster(
+                "after-green.tif",
+                np.full((2, 3), 1850, dtype=np.uint16),
+                transform=after_transform,
+                band_id="B03",
+            ),
             "after_red": self.write_raster("after-red.tif", red, transform=after_transform, band_id="B04"),
             "after_nir": self.write_raster("after-nir.tif", after_nir, transform=after_transform, band_id="B08"),
             "after_scl": self.write_raster("after-scl.tif", np.full((2, 3), 4, dtype=np.uint8), transform=after_transform),
@@ -136,6 +155,26 @@ class RasterWorkflowTests(unittest.TestCase):
                 "date": when,
                 "red": {"path": str(files[f"{role}_red"]), "band": "B04", "unit": "surface_reflectance", "scale": 0.0001, "offset": 0, "nodata": 0, "scale_offset_source": "synthetic test fixture"},
                 "nir": {"path": str(files[f"{role}_nir"]), "band": "B08", "unit": "surface_reflectance", "scale": 0.0001, "offset": 0, "nodata": 0, "scale_offset_source": "synthetic test fixture"},
+                "true_color": {
+                    "green": {
+                        "path": str(files[f"{role}_green"]),
+                        "band": "B03",
+                        "unit": "surface_reflectance",
+                        "scale": 0.0001,
+                        "offset": 0,
+                        "nodata": 0,
+                        "scale_offset_source": "synthetic test fixture",
+                    },
+                    "blue": {
+                        "path": str(files[f"{role}_blue"]),
+                        "band": "B02",
+                        "unit": "surface_reflectance",
+                        "scale": 0.0001,
+                        "offset": 0,
+                        "nodata": 0,
+                        "scale_offset_source": "synthetic test fixture",
+                    },
+                },
                 "quality": {
                     "path": str(files[f"{role}_scl"]),
                     "type": "SCL",
@@ -191,6 +230,12 @@ class RasterWorkflowTests(unittest.TestCase):
             self.assertEqual(dataset.read(1).tolist(), [[1, 1, 1], [1, 0, 0]])
         with rasterio.open(record["outputs"]["before_ndvi_raw"]) as dataset:
             self.assertNotEqual(dataset.read(1)[1, 2], FLOAT_NODATA)
+        self.assertEqual(record["inputs"]["before"]["true_color"]["band_order"], ["B04", "B03", "B02"])
+        self.assertEqual(record["inputs"]["before"]["true_color"]["valid_pixels"], 6)
+        self.assertTrue(record["visualization"]["true_color"]["applied_identically_to_both_dates"])
+        self.assertEqual(record["visualization"]["true_color"]["reflectance_display_range"], [0.0, 0.3])
+        with Image.open(record["outputs"]["comparison_png"]) as image:
+            self.assertEqual(image.size, (768, 734))
 
     def test_mismatched_comparison_grid_is_rejected(self) -> None:
         shifted = Affine(10, 0, 500010, 0, -10, 2000000)
@@ -207,6 +252,21 @@ class RasterWorkflowTests(unittest.TestCase):
         record = run(config_path)
         operation = record["inputs"]["before"]["quality"]["resampling"]["operation"]
         self.assertIn("nearest-neighbour", operation)
+
+    def test_mismatched_true_color_grid_is_rejected(self) -> None:
+        config_path = self.make_config()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        shifted = Affine(10, 0, 500010, 0, -10, 2000000)
+        green = self.write_raster(
+            "shifted-before-green.tif",
+            np.full((2, 3), 1900, dtype=np.uint16),
+            transform=shifted,
+            band_id="B03",
+        )
+        config["before"]["true_color"]["green"]["path"] = str(green)
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        with self.assertRaisesRegex(VegetationValidationError, "true-colour B03 grid"):
+            run(config_path)
 
     def test_rejects_configured_double_offset_against_explicit_raster_metadata(self) -> None:
         config_path = self.make_config()
