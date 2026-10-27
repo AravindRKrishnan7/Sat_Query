@@ -71,8 +71,13 @@ class Observation:
     acquisition_date: str
     red: np.ndarray
     nir: np.ndarray
+    raw_ndvi: np.ndarray
     valid: np.ndarray
+    quality_valid: np.ndarray
+    numerical_valid: np.ndarray
+    interpretation_valid: np.ndarray
     ndvi: np.ndarray
+    scl: np.ndarray
     grid: Grid
     resampling_record: dict[str, Any]
     warnings: list[str]
@@ -228,7 +233,7 @@ def _read_quality(
     target: Grid,
     valid_classes: Sequence[int],
     resampling: str,
-) -> tuple[np.ndarray, dict[str, Any]]:
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
     import rasterio
     from rasterio.warp import Resampling, reproject
 
@@ -279,7 +284,7 @@ def _read_quality(
                     dst_nodata=0,
                 )
                 operation = "rasterio.warp.reproject with categorical nearest-neighbour resampling"
-            return np.isin(labels, np.asarray(valid_classes)), {
+            return labels, np.isin(labels, np.asarray(valid_classes)), {
                 "path": str(path),
                 "sha256": _sha256(path),
                 "dtype": dataset.dtypes[0],
@@ -318,7 +323,26 @@ def calculate_ndvi(
     return red, nir, ndvi, final_valid
 
 
-def _observation(config: Mapping[str, Any], role: str, base_dir: Path, epsilon: float) -> tuple[Observation, dict[str, Any]]:
+def _distribution(values: np.ndarray) -> dict[str, Any]:
+    percentiles = (0, 1, 5, 25, 50, 75, 95, 99, 100)
+    if values.size == 0:
+        return {"count": 0, "percentiles": {str(value): None for value in percentiles}}
+    calculated = np.percentile(values.astype(np.float64), percentiles)
+    return {
+        "count": int(values.size),
+        "minimum": float(calculated[0]),
+        "maximum": float(calculated[-1]),
+        "percentiles": {str(key): float(value) for key, value in zip(percentiles, calculated)},
+    }
+
+
+def _observation(
+    config: Mapping[str, Any],
+    role: str,
+    base_dir: Path,
+    epsilon: float,
+    interpretation_classes: Sequence[int],
+) -> tuple[Observation, dict[str, Any]]:
     item = _require_mapping(config.get(role), role)
     _require_keys(item, {"date", "red", "nir", "quality", "source"}, role)
     acquisition_date = _parse_date(item["date"], f"{role}.date")
@@ -331,7 +355,11 @@ def _observation(config: Mapping[str, Any], role: str, base_dir: Path, epsilon: 
     scales: dict[str, tuple[float, float]] = {}
     for key, expected_identity in (("red", "B04"), ("nir", "B08")):
         spec = _require_mapping(item[key], f"{role}.{key}")
-        _require_keys(spec, {"path", "band", "unit", "scale", "offset", "nodata"}, f"{role}.{key}")
+        _require_keys(
+            spec,
+            {"path", "band", "unit", "scale", "offset", "nodata", "scale_offset_source"},
+            f"{role}.{key}",
+        )
         if spec["band"] != expected_identity:
             raise VegetationValidationError(f"{role}.{key}.band must be exactly {expected_identity}")
         if spec["unit"] != "surface_reflectance":
@@ -340,6 +368,8 @@ def _observation(config: Mapping[str, Any], role: str, base_dir: Path, epsilon: 
         offset = _number(spec["offset"], f"{role}.{key}.offset")
         if scale == 0:
             raise VegetationValidationError(f"{role}.{key}.scale must be non-zero")
+        if not isinstance(spec["scale_offset_source"], str) or not spec["scale_offset_source"].strip():
+            raise VegetationValidationError(f"{role}.{key}.scale_offset_source must document the metadata source")
         path = _resolve_path(spec["path"], base_dir, f"{role}.{key}.path")
         result = _open_single_band(path, role, expected_identity, spec["nodata"], scale, offset)
         band_results[key] = result
@@ -349,6 +379,7 @@ def _observation(config: Mapping[str, Any], role: str, base_dir: Path, epsilon: 
             "unit_after_scaling": spec["unit"],
             "scale": scale,
             "offset": offset,
+            "scale_offset_source": spec["scale_offset_source"],
         }
         scales[key] = (scale, offset)
 
@@ -376,23 +407,76 @@ def _observation(config: Mapping[str, Any], role: str, base_dir: Path, epsilon: 
     if not isinstance(quality["rule"], str) or not quality["rule"].strip():
         raise VegetationValidationError(f"{role}.quality.rule must document the mask interpretation")
     quality_path = _resolve_path(quality["path"], base_dir, f"{role}.quality.path")
-    quality_valid, resampling_record = _read_quality(
+    scl, quality_valid, resampling_record = _read_quality(
         quality_path, role, red_grid, classes, str(quality["resampling"])
     )
-    initially_valid = ~red_invalid & ~nir_invalid & quality_valid
-    red, nir, ndvi, valid = calculate_ndvi(
+    band_data_valid = ~red_invalid & ~nir_invalid
+    red, nir, raw_ndvi, numerical_valid = calculate_ndvi(
         red_raw,
         nir_raw,
         scales["red"][0],
         scales["red"][1],
         scales["nir"][0],
         scales["nir"][1],
-        initially_valid,
+        band_data_valid,
         epsilon,
     )
+    denominator = red + nir
+    near_zero = band_data_valid & np.isfinite(denominator) & (np.abs(denominator) <= epsilon)
+    valid = quality_valid & numerical_valid
+    interpretation_valid = valid & np.isin(scl, np.asarray(interpretation_classes))
+    ndvi = np.where(valid, raw_ndvi, np.nan)
+    outside = numerical_valid & ((raw_ndvi < -1.0) | (raw_ndvi > 1.0))
     warnings: list[str] = []
-    if valid.any() and (np.nanmin(ndvi) < -1.0 or np.nanmax(ndvi) > 1.0):
+    if outside.any():
         warnings.append(f"{role} contains NDVI outside [-1, 1]; values were retained, not clipped")
+    by_scl: dict[str, Any] = {}
+    for label in sorted(np.unique(scl).astype(int).tolist()):
+        selected = scl == label
+        by_scl[str(label)] = {
+            "meaning": SCL_CLASSES[label],
+            "pixels": int(selected.sum()),
+            "quality_mask_valid": int(np.count_nonzero(selected & quality_valid)),
+            "band_data_valid": int(np.count_nonzero(selected & band_data_valid)),
+            "numerically_valid_ndvi": int(np.count_nonzero(selected & numerical_valid)),
+            "analysis_valid": int(np.count_nonzero(selected & valid)),
+            "interpretation_suitable": int(np.count_nonzero(selected & interpretation_valid)),
+            "red_negative_reflectance": int(np.count_nonzero(selected & band_data_valid & (red < 0))),
+            "red_zero_reflectance": int(np.count_nonzero(selected & band_data_valid & (red == 0))),
+            "nir_negative_reflectance": int(np.count_nonzero(selected & band_data_valid & (nir < 0))),
+            "nir_zero_reflectance": int(np.count_nonzero(selected & band_data_valid & (nir == 0))),
+            "near_zero_denominator": int(np.count_nonzero(selected & near_zero)),
+            "ndvi_outside_minus1_plus1": int(np.count_nonzero(selected & outside)),
+        }
+    diagnostics = {
+        "stored_values": {
+            "red": _distribution(red_raw[~red_invalid]),
+            "nir": _distribution(nir_raw[~nir_invalid]),
+        },
+        "reflectance": {
+            "red": {
+                **_distribution(red[~red_invalid & np.isfinite(red)]),
+                "negative_count": int(np.count_nonzero(~red_invalid & np.isfinite(red) & (red < 0))),
+                "zero_count": int(np.count_nonzero(~red_invalid & np.isfinite(red) & (red == 0))),
+            },
+            "nir": {
+                **_distribution(nir[~nir_invalid & np.isfinite(nir)]),
+                "negative_count": int(np.count_nonzero(~nir_invalid & np.isfinite(nir) & (nir < 0))),
+                "zero_count": int(np.count_nonzero(~nir_invalid & np.isfinite(nir) & (nir == 0))),
+            },
+        },
+        "counts": {
+            "total_pixels": int(scl.size),
+            "quality_mask_valid": int(quality_valid.sum()),
+            "band_data_valid": int(band_data_valid.sum()),
+            "near_zero_denominator": int(near_zero.sum()),
+            "numerically_valid_ndvi": int(numerical_valid.sum()),
+            "ndvi_outside_minus1_plus1": int(outside.sum()),
+            "analysis_valid": int(valid.sum()),
+            "interpretation_suitable": int(interpretation_valid.sum()),
+        },
+        "by_scl_class": by_scl,
+    }
     record = {
         "date": acquisition_date,
         "source": dict(source),
@@ -405,9 +489,25 @@ def _observation(config: Mapping[str, Any], role: str, base_dir: Path, epsilon: 
             "rule": quality["rule"],
             "resampling": resampling_record,
         },
+        "numerical_diagnostics": diagnostics,
         "valid_pixels_for_date": int(valid.sum()),
     }
-    return Observation(role, acquisition_date, red, nir, valid, ndvi, red_grid, resampling_record, warnings), record
+    return Observation(
+        role,
+        acquisition_date,
+        red,
+        nir,
+        raw_ndvi,
+        valid,
+        quality_valid,
+        numerical_valid,
+        interpretation_valid,
+        ndvi,
+        scl,
+        red_grid,
+        resampling_record,
+        warnings,
+    ), record
 
 
 def classify_delta(delta: np.ndarray, threshold: float) -> dict[str, int]:
@@ -554,10 +654,13 @@ def _new_run_directory(root: Path) -> Path:
 
 def _summary_text(record: Mapping[str, Any]) -> str:
     results = record["results"]
+    interpretation = record["interpretation_results"]
     validity = record["validity"]
-    categories = results["change_categories"]
+    categories = interpretation["change_categories"]
     area_line = (
-        f"Common-valid area: {record['area']['areas_square_metres']['common_valid']:.2f} square metres."
+        f"Common-valid area: {record['area']['areas_square_metres']['common_valid']:.2f} square metres; "
+        f"interpretation-suitable area: "
+        f"{record['area']['areas_square_metres']['common_interpretation_suitable']:.2f} square metres."
         if record.get("area")
         else record["area_omission_reason"]
     )
@@ -566,18 +669,24 @@ def _summary_text(record: Mapping[str, Any]) -> str:
         f"Dates: {record['dates']['before']} to {record['dates']['after']}\n"
         f"Common valid pixels: {validity['common_valid_pixels']} of {validity['total_pixels']} "
         f"({validity['valid_coverage_percent']:.2f}%)\n"
-        f"Before NDVI over common area: mean {results['before_ndvi']['mean']:.6f}, "
-        f"median {results['before_ndvi']['median']:.6f}\n"
-        f"After NDVI over common area: mean {results['after_ndvi']['mean']:.6f}, "
-        f"median {results['after_ndvi']['median']:.6f}\n"
-        f"Delta NDVI (after - before): mean {results['delta_ndvi']['mean']:.6f}, "
-        f"median {results['delta_ndvi']['median']:.6f}\n"
+        f"Interpretation-suitable pixels (SCL {record['interpretation']['scl_classes']} on both dates): "
+        f"{validity['common_interpretation_suitable_pixels']}\n"
+        f"Interpretation-selected before NDVI: mean {interpretation['before_ndvi']['mean']:.6f}, "
+        f"median {interpretation['before_ndvi']['median']:.6f}\n"
+        f"Interpretation-selected after NDVI: mean {interpretation['after_ndvi']['mean']:.6f}, "
+        f"median {interpretation['after_ndvi']['median']:.6f}\n"
+        f"Interpretation-selected delta NDVI (after - before): mean {interpretation['delta_ndvi']['mean']:.6f}, "
+        f"median {interpretation['delta_ndvi']['median']:.6f}\n"
         f"Threshold: +/-{record['threshold']:.6f} (exploratory and configurable)\n"
         f"NDVI increase: {categories['increased']['pixels']} pixels "
         f"({categories['increased']['fraction']:.2%}); NDVI decrease: {categories['decreased']['pixels']} pixels "
         f"({categories['decreased']['fraction']:.2%}); approximately stable: "
         f"{categories['approximately_stable']['pixels']} pixels "
         f"({categories['approximately_stable']['fraction']:.2%})\n"
+        f"All quality-valid classes {record['quality_mask']['valid_scl_classes']} over their common area: "
+        f"before mean/median {results['before_ndvi']['mean']:.6f}/{results['before_ndvi']['median']:.6f}, "
+        f"after {results['after_ndvi']['mean']:.6f}/{results['after_ndvi']['median']:.6f}, "
+        f"delta {results['delta_ndvi']['mean']:.6f}/{results['delta_ndvi']['median']:.6f}.\n"
         f"{area_line}\n"
         "Interpretation: NDVI differences alone do not establish deforestation, crop stress, vegetation gain/loss, "
         "health improvement, damage, or the cause of change. Seasonal comparability, atmosphere, illumination, "
@@ -590,17 +699,37 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
     started = time.perf_counter()
     config, base_dir = load_config(config_path.resolve())
     analysis = _require_mapping(config["analysis"], "analysis")
-    _require_keys(analysis, {"change_threshold", "denominator_epsilon", "minimum_common_valid_pixels"}, "analysis")
+    _require_keys(
+        analysis,
+        {"change_threshold", "denominator_epsilon", "minimum_common_valid_pixels", "interpretation_scl_classes"},
+        "analysis",
+    )
     threshold = _number(analysis["change_threshold"], "analysis.change_threshold")
     epsilon = _number(analysis["denominator_epsilon"], "analysis.denominator_epsilon")
     minimum = analysis["minimum_common_valid_pixels"]
+    interpretation_classes = analysis["interpretation_scl_classes"]
     if threshold < 0 or epsilon < 0:
         raise VegetationValidationError("change_threshold and denominator_epsilon must be non-negative")
     if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 1:
         raise VegetationValidationError("analysis.minimum_common_valid_pixels must be a positive integer")
+    if (
+        not isinstance(interpretation_classes, list)
+        or not interpretation_classes
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in interpretation_classes)
+        or not set(interpretation_classes).issubset({4, 5, 6})
+    ):
+        raise VegetationValidationError(
+            "analysis.interpretation_scl_classes must be a non-empty subset of SCL classes 4, 5, 6"
+        )
 
-    before, before_record = _observation(config, "before", base_dir, epsilon)
-    after, after_record = _observation(config, "after", base_dir, epsilon)
+    before, before_record = _observation(config, "before", base_dir, epsilon, interpretation_classes)
+    after, after_record = _observation(config, "after", base_dir, epsilon, interpretation_classes)
+    if before_record["quality"]["valid_classes"] != after_record["quality"]["valid_classes"]:
+        raise VegetationValidationError("before and after quality.valid_classes must match")
+    if not set(interpretation_classes).issubset(before_record["quality"]["valid_classes"]):
+        raise VegetationValidationError(
+            "analysis.interpretation_scl_classes must be a subset of both dates' quality.valid_classes"
+        )
     if not _same_grid(before.grid, after.grid):
         raise VegetationValidationError("before and after analysis grids do not match; align them before analysis")
     if before.acquisition_date >= after.acquisition_date:
@@ -615,11 +744,27 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
     delta = np.full(before.ndvi.shape, np.nan, dtype=np.float64)
     delta[common] = after.ndvi[common] - before.ndvi[common]
     category_counts = classify_delta(delta, threshold)
+    interpretation_common = before.interpretation_valid & after.interpretation_valid
+    interpretation_count = int(interpretation_common.sum())
+    if interpretation_count == 0:
+        raise VegetationValidationError("no common interpretation-suitable pixels remain")
+    interpretation_delta = np.full(before.ndvi.shape, np.nan, dtype=np.float64)
+    interpretation_delta[interpretation_common] = (
+        after.ndvi[interpretation_common] - before.ndvi[interpretation_common]
+    )
+    interpretation_category_counts = classify_delta(interpretation_delta, threshold)
     total = int(common.size)
-    area, area_warning = _area_record(before.grid, {"common_valid": common_count, **category_counts})
+    area_counts = {
+        "common_valid": common_count,
+        "common_interpretation_suitable": interpretation_count,
+        **{f"all_valid_{name}": count for name, count in category_counts.items()},
+        **{f"interpretation_{name}": count for name, count in interpretation_category_counts.items()},
+    }
+    area, area_warning = _area_record(before.grid, area_counts)
     warnings = [
         "The SCL is a scene-classification mask, not a perfect cloud/shadow detector; residual contamination and classification errors can remain.",
         "The configured change threshold is exploratory, not a universal vegetation-change threshold.",
+        f"Interpretation statistics use only SCL classes {interpretation_classes} on both dates; broader quality-valid results are reported separately.",
         "NDVI differences alone do not establish deforestation, crop stress, vegetation gain/loss, health improvement, damage, or causation.",
         *before.warnings,
         *after.warnings,
@@ -634,6 +779,9 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
         "after_ndvi": run_dir / "after_ndvi.tif",
         "delta_ndvi": run_dir / "delta_ndvi.tif",
         "common_valid_mask": run_dir / "common_valid_mask.tif",
+        "common_interpretation_mask": run_dir / "common_interpretation_mask.tif",
+        "before_ndvi_raw": run_dir / "before_ndvi_raw.tif",
+        "after_ndvi_raw": run_dir / "after_ndvi_raw.tif",
         "comparison_png": run_dir / "comparison.png",
         "execution_record": run_dir / "run.json",
         "summary": run_dir / "summary.txt",
@@ -642,6 +790,11 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
     _write_geotiff(paths["after_ndvi"], after.ndvi, before.grid, FLOAT_NODATA, "float32")
     _write_geotiff(paths["delta_ndvi"], delta, before.grid, FLOAT_NODATA, "float32")
     _write_geotiff(paths["common_valid_mask"], common.astype(np.uint8), before.grid, 0, "uint8")
+    _write_geotiff(
+        paths["common_interpretation_mask"], interpretation_common.astype(np.uint8), before.grid, 0, "uint8"
+    )
+    _write_geotiff(paths["before_ndvi_raw"], before.raw_ndvi, before.grid, FLOAT_NODATA, "float32")
+    _write_geotiff(paths["after_ndvi_raw"], after.raw_ndvi, before.grid, FLOAT_NODATA, "float32")
     visualization = _comparison_png(paths["comparison_png"], before.ndvi, after.ndvi, delta)
     saturated = visualization["display_saturated_pixel_counts"]
     if any(saturated.values()):
@@ -655,9 +808,13 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
         name: {"pixels": count, "fraction": count / common_count}
         for name, count in category_counts.items()
     }
+    interpretation_fractions = {
+        name: {"pixels": count, "fraction": count / interpretation_count}
+        for name, count in interpretation_category_counts.items()
+    }
     elapsed = time.perf_counter() - started
     record: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "analysis": "Sentinel-2 Level-2A NDVI comparison",
         "status": "success",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -677,19 +834,44 @@ def run(config_path: Path, output_override: Path | None = None) -> dict[str, Any
             "note": "Exploratory and configurable; there is no universal correct threshold.",
         },
         "denominator_epsilon": epsilon,
+        "quality_mask": {
+            "valid_scl_classes": config["before"]["quality"]["valid_classes"],
+            "purpose": "Exclude unsuitable observation conditions; not a vegetation-only land-cover selection.",
+        },
+        "interpretation": {
+            "scl_classes": interpretation_classes,
+            "class_meanings": {str(value): SCL_CLASSES[value] for value in interpretation_classes},
+            "pixel_rule": "A pixel must be numerically valid, quality-mask-valid, and in an interpretation class on both dates.",
+        },
         "validity": {
             "total_pixels": total,
+            "before_quality_mask_valid_pixels": int(before.quality_valid.sum()),
+            "after_quality_mask_valid_pixels": int(after.quality_valid.sum()),
+            "before_numerically_valid_pixels": int(before.numerical_valid.sum()),
+            "after_numerically_valid_pixels": int(after.numerical_valid.sum()),
             "before_valid_pixels": int(before.valid.sum()),
             "after_valid_pixels": int(after.valid.sum()),
             "common_valid_pixels": common_count,
             "valid_coverage_percent": common_count / total * 100.0,
-            "basis": "intersection of band/nodata/finite/denominator/SCL-valid pixels from both dates",
+            "before_interpretation_suitable_pixels": int(before.interpretation_valid.sum()),
+            "after_interpretation_suitable_pixels": int(after.interpretation_valid.sum()),
+            "common_interpretation_suitable_pixels": interpretation_count,
+            "interpretation_coverage_percent": interpretation_count / total * 100.0,
+            "basis": "Analysis-valid is the intersection of numerical validity and SCL quality-mask validity; interpretation-suitable additionally requires a configured SCL land-cover class.",
         },
         "results": {
+            "population": "common analysis-valid pixels across all quality-valid SCL classes",
             "before_ndvi": _stats(before.ndvi[common]),
             "after_ndvi": _stats(after.ndvi[common]),
             "delta_ndvi": _stats(delta[common]),
             "change_categories": fractions,
+        },
+        "interpretation_results": {
+            "population": "common interpretation-suitable pixels",
+            "before_ndvi": _stats(before.ndvi[interpretation_common]),
+            "after_ndvi": _stats(after.ndvi[interpretation_common]),
+            "delta_ndvi": _stats(interpretation_delta[interpretation_common]),
+            "change_categories": interpretation_fractions,
         },
         "area": area,
         "area_omission_reason": area_warning,
@@ -726,6 +908,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "dates": record["dates"],
         "common_valid_pixels": record["validity"]["common_valid_pixels"],
         "results": record["results"],
+        "interpretation_results": record["interpretation_results"],
         "output_dir": str(Path(record["outputs"]["execution_record"]).parent),
     }, indent=2))
     return 0

@@ -8,7 +8,8 @@
       "band": "B04",
       "unit": "surface_reflectance",
       "scale": 0.0001,
-      "offset": -0.1,
+      "offset": 0.0,
+      "scale_offset_source": "Earth Search item earthsearch:boa_offset_applied=true; collection item_assets declares scale 0.0001 and offset 0. Item asset offset -0.1 is inconsistent and intentionally ignored.",
       "nodata": 0
     },
     "nir": {
@@ -16,7 +17,8 @@
       "band": "B08",
       "unit": "surface_reflectance",
       "scale": 0.0001,
-      "offset": -0.1,
+      "offset": 0.0,
+      "scale_offset_source": "Earth Search item earthsearch:boa_offset_applied=true; collection item_assets declares scale 0.0001 and offset 0. Item asset offset -0.1 is inconsistent and intentionally ignored.",
       "nodata": 0
     },
     "quality": {
@@ -33,6 +35,8 @@
       "stac_item_url": "https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/S2A_43PGQ_20240207_0_L2A",
       "product_uri": "S2A_MSIL2A_20240207T051001_N0510_R019_T43PGQ_20240207T085751.SAFE",
       "processing_baseline": "05.10",
+      "earthsearch_boa_offset_applied": true,
+      "asset_representation": "Offset-applied/harmonised uint16 reflectance values; physical reflectance is stored value multiplied by 0.0001 with no further additive offset.",
       "tile": "43PGQ",
       "scene_cloud_cover_percent": 0.000196,
       "prepared_window": "B04/B08 source Window(col=7922,row=6570,width=256,height=256); SCL corresponding native 20 m Window(col=3961,row=3285,width=128,height=128)",
@@ -51,7 +55,8 @@
       "band": "B04",
       "unit": "surface_reflectance",
       "scale": 0.0001,
-      "offset": -0.1,
+      "offset": 0.0,
+      "scale_offset_source": "Earth Search item earthsearch:boa_offset_applied=true; collection item_assets declares scale 0.0001 and offset 0. Item asset offset -0.1 is inconsistent and intentionally ignored.",
       "nodata": 0
     },
     "nir": {
@@ -59,7 +64,8 @@
       "band": "B08",
       "unit": "surface_reflectance",
       "scale": 0.0001,
-      "offset": -0.1,
+      "offset": 0.0,
+      "scale_offset_source": "Earth Search item earthsearch:boa_offset_applied=true; collection item_assets declares scale 0.0001 and offset 0. Item asset offset -0.1 is inconsistent and intentionally ignored.",
       "nodata": 0
     },
     "quality": {
@@ -76,6 +82,8 @@
       "stac_item_url": "https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/S2B_43PGQ_20250206_0_L2A",
       "product_uri": "S2B_MSIL2A_20250206T050909_N0511_R019_T43PGQ_20250206T071445.SAFE",
       "processing_baseline": "05.11",
+      "earthsearch_boa_offset_applied": true,
+      "asset_representation": "Offset-applied/harmonised uint16 reflectance values; physical reflectance is stored value multiplied by 0.0001 with no further additive offset.",
       "tile": "43PGQ",
       "scene_cloud_cover_percent": 0.000098,
       "prepared_window": "B04/B08 source Window(col=7922,row=6570,width=256,height=256); SCL corresponding native 20 m Window(col=3961,row=3285,width=128,height=128)",
@@ -90,7 +98,8 @@
   "analysis": {
     "change_threshold": 0.1,
     "denominator_epsilon": 1e-06,
-    "minimum_common_valid_pixels": 1000
+    "minimum_common_valid_pixels": 1000,
+    "interpretation_scl_classes": [4]
   },
   "output_root": "../outputs/vegetation-real"
 }

@@ -103,10 +103,11 @@ ignored by Git; exact product IDs, asset URLs, processing baselines, window,
 scale/offset, and usage terms are tracked in the configuration.
 
 Each invocation creates a new timestamped directory beneath `output_root` and
-writes before/after/delta GeoTIFFs, a common-valid mask, a comparison PNG,
-`run.json`, and `summary.txt`. It rejects mismatched analysis grids rather than
-resizing them. A 20 m SCL mask may be placed on the 10 m analysis grid only by
-the explicitly configured categorical nearest-neighbour operation.
+writes quality-masked and raw numerical NDVI GeoTIFFs, a delta GeoTIFF,
+common-valid and interpretation masks, a comparison PNG, `run.json`, and
+`summary.txt`. It rejects mismatched analysis grids rather than resizing them.
+A 20 m SCL mask may be placed on the 10 m analysis grid only by the explicitly
+configured categorical nearest-neighbour operation.
 
 The default example threshold of ±0.1 is an exploratory starting point, not a
 universal change threshold. Output classes describe NDVI increase, decrease,
@@ -120,3 +121,4 @@ status.
 - [v1 prototype scope](docs/v1-scope.md)
 - [model feasibility and first inference](docs/model-feasibility.md)
 - [Sentinel-2 vegetation comparison](docs/vegetation-analysis.md)
+- [Project status and scaling audit](docs/PROJECT_STATUS.md)

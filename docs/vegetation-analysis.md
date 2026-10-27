@@ -42,6 +42,16 @@ Official references checked for this implementation:
   metadata, and HTTP access for non-requester-pays assets. A real sample, when
   prepared, must retain its exact STAC item and asset URLs in the configuration.
 
+Provider representation must take precedence over a generic product formula.
+For the legacy Earth Search `sentinel-2-l2a` collection, item-level raster
+offset metadata can contradict both the collection metadata and the actual COG
+representation. Element 84 issue
+[#71](https://github.com/Element84/earth-search/issues/71) records cases where
+the item advertises `-0.1` even though conversion already applied the offset.
+The pinned real-example items both report
+`earthsearch:boa_offset_applied=true`; therefore their COG values use
+`reflectance = stored * 0.0001`, not `stored * 0.0001 - 0.1`.
+
 The supplied SCL rule accepts 4 (vegetation), 5 (not vegetated), and 6 (water).
 It rejects 0 (no-data), 1 (saturated/defective), 2 (dark area or cast shadow,
 depending on baseline), 3 (cloud shadow), 7 (unclassified/low-probability
@@ -63,8 +73,8 @@ For both `before` and `after`, it requires:
 - an ISO acquisition date;
 - a single-channel numeric B04 GeoTIFF and a single-channel numeric B08
   GeoTIFF;
-- explicit `surface_reflectance` unit, `scale`, `offset`, and `nodata` for each
-  band;
+- explicit `surface_reflectance` unit, `scale`, `offset`, `nodata`, and a
+  textual `scale_offset_source` for each band;
 - an integer Sentinel-2 Level-2A SCL raster, a documented rule, accepted class
   list, and `nearest` resampling policy;
 - source provenance such as provider, product/STAC item ID, asset URLs, and
@@ -97,7 +107,9 @@ area of Bengaluru. Prepare its small native-grid windows without credentials:
 ```
 
 This fixed downloader is not a catalog search. The source rasters and generated
-local chips remain ignored by Git.
+local chips remain ignored by Git. For each pinned acquisition, it checks that
+the remote COG remains `uint16`, nodata 0, and internally neutral scale/offset
+1/0, then annotates the local copy with the audited `0.0001/0.0` conversion.
 
 ## Command and outputs
 
@@ -116,6 +128,10 @@ overwriting earlier results. It contains:
 - `before_ndvi.tif` and `after_ndvi.tif` (float32, nodata `-9999`);
 - `delta_ndvi.tif` (after minus before, valid only on the common-valid mask);
 - `common_valid_mask.tif` (`1` valid, `0` invalid/no-data);
+- `common_interpretation_mask.tif` (`1` suitable for the configured
+  interpretation on both dates);
+- `before_ndvi_raw.tif` and `after_ndvi_raw.tif` (numerically valid NDVI before
+  SCL quality filtering, retained for audit rather than summary statistics);
 - `comparison.png` (shared `[-1, 1]` NDVI scale, `[-1, 1]` zero-centred
   delta scale, invalid pixels in grey, and exact display-saturation counts in
   the JSON record);
@@ -128,6 +144,11 @@ to float64 before arithmetic, does not replace invalid data with zero, and does
 not clip computed values. The PNG can saturate only its display colours at the
 stated range endpoints; GeoTIFF values and statistics remain untouched.
 
+The JSON separately reports SCL quality validity, numerical NDVI validity, and
+interpretation suitability. Its per-date diagnostics include stored-value and
+reflectance percentiles; negative/zero reflectance, near-zero denominator, and
+out-of-range NDVI counts; and the same exclusion counts by SCL class.
+
 Area is reported only for a projected CRS whose linear units Rasterio can
 convert to metres. Pixel area is the absolute affine determinant, so rotated
 projected grids are supported. Geographic grids report counts and an explicit
@@ -135,10 +156,15 @@ area-omission reason.
 
 ## Interpretation and limitations
 
-Summary statistics use the intersection of valid pixels from both dates. With
-threshold `t`, increase is `delta > t`, decrease is `delta < -t`, and values on
-both boundaries are approximately stable. The example `t=0.1` is exploratory
-and configurable; no universally correct threshold exists.
+Broad statistics use the intersection of numerically valid, quality-mask-valid
+pixels from both dates. The real example's broad population includes SCL 4
+(vegetation), 5 (not vegetated), and 6 (water). Vegetation-only interpretation
+statistics are reported separately and require SCL 4 on both dates. This rule
+is explicit but omits transitions into or out of the SCL vegetation class and
+can introduce selection bias. With threshold `t`, increase is `delta > t`,
+decrease is `delta < -t`, and values on both boundaries are approximately
+stable. The example `t=0.1` is exploratory and configurable; no universally
+correct threshold exists.
 
 These are NDVI increase/decrease categories. NDVI alone does not establish
 deforestation, crop stress, vegetation gain/loss, health improvement, damage,
@@ -156,24 +182,29 @@ SCL exclusion, exact-grid rejection, common-valid statistics, threshold
 boundaries, nearest-neighbour SCL placement, and GeoTIFF geospatial/nodata
 metadata.
 
-The fixed real example completed end to end using Earth Search items
-`S2A_43PGQ_20240207_0_L2A` and `S2B_43PGQ_20250206_0_L2A`. The 65,536-pixel
-grid had 64,428 common-valid pixels (98.31%, or 6,442,800 m² in EPSG:32643).
-Over that exact intersection, before/after mean NDVI was 0.816823/0.918332,
-median NDVI was 0.423209/0.470973, and mean/median delta was
-0.101509/0.027036. At the explicitly exploratory ±0.1 threshold, 22,929 pixels
-(35.59%) increased, 17,259 (26.79%) decreased, and 24,240 (37.62%) were
-approximately stable.
+The first real run contained a confirmed double-offset bug. Both pinned items
+have `earthsearch:boa_offset_applied=true`, but the preparation/configuration
+applied the contradictory item-level `-0.1` again. Prior output directories are
+preserved for comparison; `run-20261027T165248Z` is the last affected run.
 
-Those real results need an important qualification: documented `-0.1`
-reflectance offsets produce negative or near-zero reflectances for many dark
-urban pixels, so many retained NDVI values fall outside `[-1, 1]`. The run
-warned about this, retained all numerical values, and recorded colour-only
-saturation for 23,870 before, 24,327 after, and 11,781 delta pixels. This is
-preferable to silently clipping values, but it also makes the means and change
-fractions sensitive to low-signal pixels; medians are less sensitive. Any
-future reflectance-range or denominator policy must be explicit and justified,
-not tuned to make the map look better.
+The corrected run is `run-20261027T171413Z`. All 65,536 pixels per date have
+valid B04/B08 data. For both dates there are zero negative reflectances, zero
+zero-reflectance values, zero near-zero denominators at `1e-6`, and zero NDVI
+values outside `[-1, 1]` across every observed SCL class.
+
+The broad SCL 4/5/6 intersection has 64,456 pixels (98.35%). Before/after
+mean NDVI is 0.244767/0.259284, median is 0.167017/0.177172, and mean/median
+delta is 0.014516/0.014226. At ±0.1, 6,113 pixels (9.48%) increased, 3,299
+(5.12%) decreased, and 55,044 (85.40%) were approximately stable.
+
+The vegetation-only SCL 4 intersection has 7,504 pixels (11.45%, 750,400 m²).
+Before/after mean NDVI is 0.632204/0.654030, median is 0.639994/0.670941, and
+mean/median delta is 0.021826/0.024096. At ±0.1, 1,013 pixels (13.50%)
+increased, 485 (6.46%) decreased, and 6,006 (80.04%) were approximately stable.
+
+Full stored-value percentiles, reflectance ranges, and SCL-class distributions
+are in the corrected `run.json` and summarised in
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
 The real run verifies execution and output contracts, not ecological accuracy.
 No ground truth, field measurements, reference change labels, causal analysis,

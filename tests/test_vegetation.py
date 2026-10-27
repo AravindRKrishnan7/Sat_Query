@@ -44,6 +44,20 @@ class CalculationTests(unittest.TestCase):
         self.assertAlmostEqual(scaled_nir[0, 0], 0.6)
         self.assertAlmostEqual(ndvi[0, 0], 0.5)
 
+    def test_offset_applied_provider_values_are_not_offset_twice(self) -> None:
+        red = np.asarray([[900]], dtype=np.uint16)
+        nir = np.asarray([[1100]], dtype=np.uint16)
+        _, _, correct, correct_valid = calculate_ndvi(
+            red, nir, 0.0001, 0.0, 0.0001, 0.0, np.ones((1, 1), bool), 1e-6
+        )
+        _, _, doubled, doubled_valid = calculate_ndvi(
+            red, nir, 0.0001, -0.1, 0.0001, -0.1, np.ones((1, 1), bool), 1e-6
+        )
+        self.assertTrue(correct_valid[0, 0])
+        self.assertAlmostEqual(correct[0, 0], 0.1)
+        self.assertFalse(doubled_valid[0, 0])
+        self.assertTrue(np.isnan(doubled[0, 0]))
+
     def test_integer_inputs_convert_before_subtraction(self) -> None:
         red = np.asarray([[6000]], dtype=np.uint16)
         nir = np.asarray([[2000]], dtype=np.uint16)
@@ -120,8 +134,8 @@ class RasterWorkflowTests(unittest.TestCase):
         def observation(role: str, when: str) -> dict:
             return {
                 "date": when,
-                "red": {"path": str(files[f"{role}_red"]), "band": "B04", "unit": "surface_reflectance", "scale": 0.0001, "offset": 0, "nodata": 0},
-                "nir": {"path": str(files[f"{role}_nir"]), "band": "B08", "unit": "surface_reflectance", "scale": 0.0001, "offset": 0, "nodata": 0},
+                "red": {"path": str(files[f"{role}_red"]), "band": "B04", "unit": "surface_reflectance", "scale": 0.0001, "offset": 0, "nodata": 0, "scale_offset_source": "synthetic test fixture"},
+                "nir": {"path": str(files[f"{role}_nir"]), "band": "B08", "unit": "surface_reflectance", "scale": 0.0001, "offset": 0, "nodata": 0, "scale_offset_source": "synthetic test fixture"},
                 "quality": {
                     "path": str(files[f"{role}_scl"]),
                     "type": "SCL",
@@ -137,7 +151,7 @@ class RasterWorkflowTests(unittest.TestCase):
             "product": "Sentinel-2 Level-2A",
             "before": observation("before", "2023-01-01"),
             "after": observation("after", "2024-01-01"),
-            "analysis": {"change_threshold": 0.09, "denominator_epsilon": 1e-6, "minimum_common_valid_pixels": 1},
+            "analysis": {"change_threshold": 0.09, "denominator_epsilon": 1e-6, "minimum_common_valid_pixels": 1, "interpretation_scl_classes": [4]},
             "output_root": str(self.root / "outputs"),
         }
         path = self.root / "config.json"
@@ -147,9 +161,13 @@ class RasterWorkflowTests(unittest.TestCase):
     def test_nodata_quality_mask_common_statistics_and_outputs(self) -> None:
         record = run(self.make_config())
         self.assertEqual(record["validity"]["total_pixels"], 6)
+        self.assertEqual(record["validity"]["before_quality_mask_valid_pixels"], 5)
+        self.assertEqual(record["validity"]["before_numerically_valid_pixels"], 5)
         self.assertEqual(record["validity"]["before_valid_pixels"], 4)
         self.assertEqual(record["validity"]["after_valid_pixels"], 6)
         self.assertEqual(record["validity"]["common_valid_pixels"], 4)
+        self.assertEqual(record["validity"]["common_interpretation_suitable_pixels"], 4)
+        self.assertEqual(record["inputs"]["before"]["numerical_diagnostics"]["counts"]["near_zero_denominator"], 0)
         self.assertAlmostEqual(record["results"]["before_ndvi"]["mean"], 0.5)
         self.assertAlmostEqual(record["results"]["after_ndvi"]["mean"], (0.6 + 1 / 3 + 0.5 + 0.5) / 4)
         self.assertEqual(record["results"]["change_categories"]["increased"]["pixels"], 1)
@@ -171,6 +189,8 @@ class RasterWorkflowTests(unittest.TestCase):
         with rasterio.open(record["outputs"]["common_valid_mask"]) as dataset:
             self.assertEqual(dataset.nodata, 0)
             self.assertEqual(dataset.read(1).tolist(), [[1, 1, 1], [1, 0, 0]])
+        with rasterio.open(record["outputs"]["before_ndvi_raw"]) as dataset:
+            self.assertNotEqual(dataset.read(1)[1, 2], FLOAT_NODATA)
 
     def test_mismatched_comparison_grid_is_rejected(self) -> None:
         shifted = Affine(10, 0, 500010, 0, -10, 2000000)
@@ -187,6 +207,18 @@ class RasterWorkflowTests(unittest.TestCase):
         record = run(config_path)
         operation = record["inputs"]["before"]["quality"]["resampling"]["operation"]
         self.assertIn("nearest-neighbour", operation)
+
+    def test_rejects_configured_double_offset_against_explicit_raster_metadata(self) -> None:
+        config_path = self.make_config()
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        red_path = Path(config["before"]["red"]["path"])
+        with rasterio.open(red_path, "r+") as dataset:
+            dataset.scales = (0.0001,)
+            dataset.offsets = (0.0,)
+        config["before"]["red"]["offset"] = -0.1
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        with self.assertRaisesRegex(VegetationValidationError, "configured scale/offset.*disagree"):
+            run(config_path)
 
 
 if __name__ == "__main__":
