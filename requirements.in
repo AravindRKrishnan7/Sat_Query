@@ -1,7 +1,8 @@
-# Installation-tested direct dependencies for the patched MCI inference path.
+# Installation-tested direct dependencies for MCI inference and NDVI analysis.
 # These versions have native CPython 3.11 / macOS arm64 wheels. Use a local
-# virtual environment; this file intentionally excludes unused upstream extras.
+# virtual environment; this file intentionally excludes unused extras.
 torch==2.14.1
 numpy==2.4.6
 Pillow==13.0.0
 einops==0.8.2
+rasterio==1.4.4

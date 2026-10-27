@@ -1,9 +1,14 @@
 # SatQuery AI
 
-SatQuery AI is an early satellite change-analysis prototype. It accepts two
-already aligned optical images of the same place and runs the official
-Change-Agent MCI architecture to produce a three-class change mask, visual
-outputs, and a model-generated change caption.
+SatQuery AI is an early satellite change-analysis prototype with two separate
+capabilities:
+
+- Change-Agent MCI inference on an already aligned RGB image pair.
+- Deterministic NDVI comparison of two prepared Sentinel-2 Level-2A
+  multispectral observations.
+
+The vegetation workflow is numerical geospatial processing; it does not load
+or call an AI model. The existing Change-Agent path remains independent.
 
 ## Current status
 
@@ -67,7 +72,51 @@ Run the lightweight tests without downloading or loading model weights:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
+## Compare vegetation index between dates
+
+NDVI needs the Sentinel-2 red (B04) and near-infrared (B08) surface-reflectance
+bands. An RGB PNG is insufficient: it has no NIR channel and normally discards
+the radiometric, no-data, CRS, transform, and quality-mask metadata needed for
+a defensible calculation.
+
+Copy [the example configuration](configs/vegetation.example.json), replace its
+paths and provenance placeholders with two prepared, same-grid Level-2A
+observations, then run:
+
+```sh
+.venv/bin/python scripts/run_vegetation_comparison.py \
+  --config configs/vegetation.local.json
+```
+
+A fixed credential-free real example can be prepared and run with:
+
+```sh
+.venv/bin/python scripts/prepare_vegetation_sample.py
+.venv/bin/python scripts/run_vegetation_comparison.py \
+  --config configs/vegetation.real-example.json
+```
+
+The preparation script performs no live search: it reads a 256 × 256 native
+10 m window (and corresponding 128 × 128 native 20 m SCL) from six pinned
+public Earth Search COG assets over Bengaluru. Downloaded rasters remain
+ignored by Git; exact product IDs, asset URLs, processing baselines, window,
+scale/offset, and usage terms are tracked in the configuration.
+
+Each invocation creates a new timestamped directory beneath `output_root` and
+writes before/after/delta GeoTIFFs, a common-valid mask, a comparison PNG,
+`run.json`, and `summary.txt`. It rejects mismatched analysis grids rather than
+resizing them. A 20 m SCL mask may be placed on the 10 m analysis grid only by
+the explicitly configured categorical nearest-neighbour operation.
+
+The default example threshold of ±0.1 is an exploratory starting point, not a
+universal change threshold. Output classes describe NDVI increase, decrease,
+and approximate stability—not vegetation gain/loss, health, damage, or cause.
+See the [vegetation comparison guide](docs/vegetation-analysis.md) for the full
+input contract, preparation notes, interpretation, limitations, and test
+status.
+
 ## Documentation
 
 - [v1 prototype scope](docs/v1-scope.md)
 - [model feasibility and first inference](docs/model-feasibility.md)
+- [Sentinel-2 vegetation comparison](docs/vegetation-analysis.md)

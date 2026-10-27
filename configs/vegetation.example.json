@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "product": "Sentinel-2 Level-2A",
+  "before": {
+    "date": "2023-02-15",
+    "red": {
+      "path": "../data/vegetation/before/B04.tif",
+      "band": "B04",
+      "unit": "surface_reflectance",
+      "scale": 0.0001,
+      "offset": -0.1,
+      "nodata": 0
+    },
+    "nir": {
+      "path": "../data/vegetation/before/B08.tif",
+      "band": "B08",
+      "unit": "surface_reflectance",
+      "scale": 0.0001,
+      "offset": -0.1,
+      "nodata": 0
+    },
+    "quality": {
+      "path": "../data/vegetation/before/SCL.tif",
+      "type": "SCL",
+      "valid_classes": [4, 5, 6],
+      "resampling": "nearest",
+      "rule": "Keep vegetation, not-vegetated and water; exclude no-data, defective/saturated, dark/cast-shadow, cloud-shadow, unclassified, cloud, cirrus and snow/ice classes."
+    },
+    "source": {
+      "provider": "Replace with the prepared-data provider",
+      "product_id": "Replace with the exact Sentinel-2 Level-2A product/item ID",
+      "source_url": "Replace with the catalog or product URL",
+      "usage_terms": "https://dataspace.copernicus.eu/terms-and-conditions"
+    }
+  },
+  "after": {
+    "date": "2024-02-15",
+    "red": {
+      "path": "../data/vegetation/after/B04.tif",
+      "band": "B04",
+      "unit": "surface_reflectance",
+      "scale": 0.0001,
+      "offset": -0.1,
+      "nodata": 0
+    },
+    "nir": {
+      "path": "../data/vegetation/after/B08.tif",
+      "band": "B08",
+      "unit": "surface_reflectance",
+      "scale": 0.0001,
+      "offset": -0.1,
+      "nodata": 0
+    },
+    "quality": {
+      "path": "../data/vegetation/after/SCL.tif",
+      "type": "SCL",
+      "valid_classes": [4, 5, 6],
+      "resampling": "nearest",
+      "rule": "Keep vegetation, not-vegetated and water; exclude no-data, defective/saturated, dark/cast-shadow, cloud-shadow, unclassified, cloud, cirrus and snow/ice classes."
+    },
+    "source": {
+      "provider": "Replace with the prepared-data provider",
+      "product_id": "Replace with the exact Sentinel-2 Level-2A product/item ID",
+      "source_url": "Replace with the catalog or product URL",
+      "usage_terms": "https://dataspace.copernicus.eu/terms-and-conditions"
+    }
+  },
+  "analysis": {
+    "change_threshold": 0.1,
+    "denominator_epsilon": 1e-06,
+    "minimum_common_valid_pixels": 100
+  },
+  "output_root": "../outputs/vegetation"
+}
