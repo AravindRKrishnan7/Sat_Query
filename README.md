@@ -10,6 +10,51 @@ capabilities:
 The vegetation workflow is numerical geospatial processing; it does not load
 or call an AI model. The existing Change-Agent path remains independent.
 
+## Launch GeoLens locally
+
+GeoLens is the local Streamlit interface around those two existing analysis
+paths. It does not add an LLM, agent framework, authentication, database, or
+public deployment.
+
+Prerequisites:
+
+- create `.venv` and install `requirements.in` as described below;
+- run `./scripts/prepare_change_agent.sh` so the verified checkpoint and pinned
+  upstream source are present;
+- run `.venv/bin/python scripts/prepare_vegetation_sample.py` once if the fixed
+  Sentinel-2 sample is not already present.
+
+Launch the app from the repository root with exactly:
+
+```sh
+.venv/bin/python -m streamlit run app.py \
+  --server.address 127.0.0.1 \
+  --server.port 8501
+```
+
+Open [http://127.0.0.1:8501](http://127.0.0.1:8501). The server binds only to
+the loopback interface. It does not download model or satellite assets on
+startup.
+
+The construction mode accepts bounded PNG/JPEG uploads. The model still
+receives only 256 × 256 RGB inputs. Optional resizing is explicit, produces a
+prepared-copy preview, and does not imply registration, alignment, suitable
+ground resolution, or restored detail. Analysis starts only after the user
+confirms that the pair depicts the same already aligned location and clicks
+the button. The verified model is cached in the Streamlit process after its
+first CPU load; completed execution records stay in session state across
+ordinary widget reruns.
+
+The vegetation mode intentionally accepts no RGB upload. “Run prepared
+example” calls the corrected real-example configuration and displays its
+existing true-colour/NDVI comparison, provenance, common-valid coverage,
+persistent-vegetation statistics, threshold, warnings, and downloads.
+
+GeoLens writes every execution to a new ignored directory beneath
+`outputs/geolens/`. Uploaded images receive unique internal filenames; weights,
+prepared data, uploads, and generated results remain excluded from Git. The
+local upload limit is 10 MB per image.
+
 ## Current status
 
 Real CPU inference succeeds on an Apple M4 using Python 3.11.17 and native

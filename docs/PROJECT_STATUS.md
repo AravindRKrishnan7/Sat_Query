@@ -1,8 +1,71 @@
 # Project status
 
-Status verified on 2026-10-27. The working implementation has two independent
+Status verified on 2026-10-28. The working implementation has two independent
 paths: Change-Agent RGB inference and deterministic Sentinel-2 Level-2A NDVI
 comparison. The NDVI path does not call an AI model.
+
+## Local GeoLens interface
+
+GeoLens is now a local Streamlit interface over the existing two execution
+functions. It leaves the `satquery` package and repository name unchanged and
+adds no LLM, agent framework, authentication, database, or deployment.
+
+Construction mode:
+
+- accepts PNG/JPEG uploads up to 10 MB under unique internal filenames;
+- requires an explicit same-location/already-aligned confirmation;
+- accepts the model's native 256 × 256 RGB contract, or optionally creates and
+  previews explicit Lanczos-resized copies with a warning that resizing does
+  not align imagery or guarantee suitable resolution;
+- calls the existing Change-Agent CPU runner only on the Analyse button;
+- caches the verified model load in the Streamlit process and retains the
+  latest execution record in session state;
+- displays the prepared pair, coloured class mask, overlay, raw unedited
+  caption, predicted pixel fractions, warnings, downloads, and expandable
+  technical metadata.
+
+Vegetation mode has one “Run prepared example” action. It accepts no ordinary
+RGB upload and calls the existing corrected real-example runner with a separate
+`outputs/geolens/vegetation` root. It displays the existing comparison PNG,
+dates, provenance, legends, common-valid coverage, threshold, and statistics
+for pixels classified SCL 4 vegetation on both dates. Display stretching and
+reflectance/NDVI calculations remain separate.
+
+Every GeoLens execution uses a new directory beneath the ignored
+`outputs/geolens/` tree. The app performs no asset download at startup and
+reports missing checkpoint, upstream source, prepared raster, upload, and
+result-contract errors in user-facing language.
+
+### GeoLens verification
+
+- Streamlit 1.66.1 is installed only in the project `.venv` and pinned in
+  `requirements.in`.
+- All 24 lightweight tests pass. Six new tests cover bounded PNG/JPEG decoding,
+  explicit resizing, RGB rejection, unique run/input paths, and execution-record
+  validation.
+- Streamlit's integration harness rendered both modes without exceptions and
+  ran both workflows against real local assets, not mocks.
+- Construction used the current 1254 × 1254 repository sample through the
+  explicit resize path and the real verified CPU checkpoint. Its execution at
+  `outputs/geolens/construction/run-20261028T125540054743Z-54d42679ec`
+  predicted 95.93% background, 0.00% road change, and 4.07% building change.
+  The raw caption was `some houses are built on the bareland on the bareland`;
+  the repetition is retained.
+- Vegetation execution
+  `outputs/geolens/vegetation/run-20261028T125434Z` reproduced 98.3521% common
+  valid coverage, 7,504 persistent-vegetation pixels, the corrected NDVI
+  statistics, and threshold ±0.1.
+- The local server started successfully at `http://127.0.0.1:8501`. No browser
+  instance was connected to the available browser-control surface, so visible
+  browser interaction was not verified; server startup and Streamlit integration
+  testing are verified separately.
+
+Remaining interface limitations: spatial alignment is caller-confirmed rather
+than measured; construction accuracy remains unmeasured; construction resizing
+is generic image resampling, not geospatial preparation; the caption is
+unverified; vegetation retains all limitations below; results persist only on
+local disk/session state; and there is intentionally no multi-user isolation,
+authentication, database, background job queue, or public deployment.
 
 ## Vegetation scaling audit
 

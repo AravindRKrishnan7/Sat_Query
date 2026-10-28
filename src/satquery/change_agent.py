@@ -17,7 +17,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 from PIL import Image, ImageDraw, UnidentifiedImageError
@@ -410,7 +410,10 @@ def save_outputs(
     return {name: str(path.resolve()) for name, path in paths.items()}
 
 
-def run(args: argparse.Namespace) -> dict[str, Any]:
+def run(
+    args: argparse.Namespace,
+    model_loader: Callable[[Path, Path, Any, Any], tuple[Any, Any, Any, dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     import torch
 
@@ -449,7 +452,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
 
     load_started = time.perf_counter()
-    encoder, encoder_trans, decoder, model_meta = load_model(source_dir, checkpoint_path, device, torch)
+    loader = model_loader or load_model
+    encoder, encoder_trans, decoder, cached_model_meta = loader(
+        source_dir, checkpoint_path, device, torch
+    )
+    # A cached loader may return the same metadata object for several runs.
+    # Work on a shallow copy because the vocabulary is intentionally excluded
+    # from the JSON execution record below.
+    model_meta = dict(cached_model_meta)
     load_seconds = time.perf_counter() - load_started
     if model_meta["attentive_encoder_unexpected_checkpoint_keys"]:
         warnings.append(
