@@ -278,6 +278,18 @@ def update_aoi_state(state: MutableMapping[str, Any], bounds: Sequence[float] | 
     return True
 
 
+def _clear_aoi_dependent_state(state: MutableMapping[str, Any]) -> None:
+    for key in (
+        "historical_request",
+        "historical_result",
+        "assistant_plan",
+        "assistant_execution",
+        "historical_answer",
+        "historical_chat",
+    ):
+        state.pop(key, None)
+
+
 def activate_confirmed_aoi(
     state: MutableMapping[str, Any],
     bounds: Sequence[float],
@@ -295,19 +307,11 @@ def activate_confirmed_aoi(
         and state.get("historical_aoi_source") == source
         and state.get("historical_aoi_label") == label
     )
+    _clear_aoi_dependent_state(state)
     if unchanged:
         return confirmed, False
     state["historical_draft_bounds"] = confirmed.bounds
-    for key in (
-        "historical_confirmed_aoi",
-        "historical_request",
-        "historical_result",
-        "assistant_plan",
-        "assistant_execution",
-        "historical_answer",
-        "historical_chat",
-    ):
-        state.pop(key, None)
+    state.pop("historical_confirmed_aoi", None)
     state["historical_confirmed_aoi"] = confirmed
     state["historical_aoi_source"] = source
     state["historical_aoi_label"] = label

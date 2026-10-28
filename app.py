@@ -747,14 +747,13 @@ def _historical_mode() -> None:
                 interpreted = interpret_request(
                     provider,
                     prompt,
-                    aoi_confirmed=isinstance(confirmed, ConfirmedAOI),
-                    active_boundary_label=st.session_state.get("historical_aoi_label"),
-                    active_boundary_source=st.session_state.get("historical_aoi_source"),
                 )
                 plan = build_tool_plan(
                     interpreted,
                     confirmed if isinstance(confirmed, ConfirmedAOI) else None,
                     current_year=datetime.now(timezone.utc).year,
+                    active_boundary_source=st.session_state.get("historical_aoi_source"),
+                    active_boundary_label=st.session_state.get("historical_aoi_label"),
                 )
                 status.update(label="Request interpretation complete", state="complete", expanded=False)
             st.session_state["assistant_plan"] = plan
@@ -777,13 +776,13 @@ def _historical_mode() -> None:
     assistant_plan = st.session_state.get("assistant_plan")
     if isinstance(assistant_plan, ToolPlan):
         st.markdown("#### Validated interpretation and tool plan")
-        if assistant_plan.interpretation.boundary_label:
-            st.info(f"Using the {assistant_plan.interpretation.boundary_label}")
+        if assistant_plan.boundary_resolution.label:
+            st.info(f"Using the {assistant_plan.boundary_resolution.label}")
         st.json(assistant_plan.record())
-        if assistant_plan.interpretation.missing_information:
+        if assistant_plan.boundary_resolution.missing_information:
             st.warning(
                 "Clarification required: "
-                + ", ".join(assistant_plan.interpretation.missing_information)
+                + ", ".join(assistant_plan.boundary_resolution.missing_information)
                 + ". Submit a complete follow-up request."
             )
         for tool in assistant_plan.tools:

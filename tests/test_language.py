@@ -143,16 +143,62 @@ class InterpretationTests(unittest.TestCase):
         interpreted = interpret_request(
             provider,
             "Compare vegetation from 2021 to 2025.",
-            aoi_confirmed=True,
-            active_boundary_label=DEMO_AOI_LABEL,
-            active_boundary_source="demo_preset",
         )
         self.assertEqual(interpreted.missing_information, ())
-        self.assertEqual(interpreted.boundary_source, "demo_preset")
+        self.assertFalse(interpreted.uses_confirmed_boundary)
         self.assertIsNone(interpreted.evidence["confirmed_boundary"])
-        plan = build_tool_plan(interpreted, confirm_aoi(DEMO_BOUNDS), current_year=2026)
+        plan = build_tool_plan(
+            interpreted,
+            confirm_aoi(DEMO_BOUNDS),
+            current_year=2026,
+            active_boundary_source="demo_preset",
+            active_boundary_label=DEMO_AOI_LABEL,
+        )
         self.assertTrue(plan.runnable)
+        self.assertEqual(plan.boundary_resolution.source, "application_state")
+        self.assertEqual(plan.boundary_resolution.active_aoi_source, "demo_preset")
         self.assertEqual(plan.record()["boundary_context"]["label"], DEMO_AOI_LABEL)
+
+    def test_exact_observed_question_resolves_confirmed_aoi_into_ready_plan(self) -> None:
+        provider = FakeProvider(
+            interpretation_payload(
+                vegetation=True,
+                boundary=False,
+                start_year=2022,
+                end_year=2024,
+            )
+        )
+        interpreted = interpret_request(provider, "compare the vegetation from 2022 to 2024")
+        plan = build_tool_plan(
+            interpreted,
+            confirm_aoi(DEMO_BOUNDS),
+            current_year=2026,
+            active_boundary_source="demo_preset",
+            active_boundary_label=DEMO_AOI_LABEL,
+        )
+        self.assertFalse(interpreted.uses_confirmed_boundary)
+        self.assertEqual(plan.boundary_resolution.missing_information, ())
+        self.assertEqual(plan.status, "ready")
+        self.assertEqual(plan.historical_request.aoi.bounds, DEMO_BOUNDS)
+        self.assertEqual(plan.historical_request.years, (2022, 2023, 2024))
+        record = plan.record()
+        self.assertEqual(
+            record["raw_model_interpretation"]["boundary_reference"],
+            "not_explicit_in_source_text",
+        )
+        self.assertEqual(record["boundary_resolution"]["source"], "application_state")
+
+    def test_reconfirming_same_aoi_invalidates_stale_blocked_plan(self) -> None:
+        state = {}
+        activate_confirmed_aoi(state, DEMO_BOUNDS, "demo_preset", DEMO_AOI_LABEL)
+        state["assistant_plan"] = object()
+        state["historical_chat"] = [{"role": "assistant", "content": "blocked"}]
+        _confirmed, changed = activate_confirmed_aoi(
+            state, DEMO_BOUNDS, "demo_preset", DEMO_AOI_LABEL
+        )
+        self.assertFalse(changed)
+        self.assertNotIn("assistant_plan", state)
+        self.assertNotIn("historical_chat", state)
 
     def test_switching_to_custom_aoi_invalidates_demo_plan(self) -> None:
         state = {}
@@ -176,20 +222,24 @@ class InterpretationTests(unittest.TestCase):
         interpreted = interpret_request(
             provider,
             "Compare vegetation in Kochi from 2021 to 2025.",
-            aoi_confirmed=True,
-            active_boundary_label=DEMO_AOI_LABEL,
-            active_boundary_source="demo_preset",
         )
-        self.assertIn("named_location_confirmation", interpreted.missing_information)
-        self.assertIsNone(interpreted.boundary_source)
-        plan = build_tool_plan(interpreted, confirm_aoi(DEMO_BOUNDS), current_year=2026)
+        plan = build_tool_plan(
+            interpreted,
+            confirm_aoi(DEMO_BOUNDS),
+            current_year=2026,
+            active_boundary_source="demo_preset",
+            active_boundary_label=DEMO_AOI_LABEL,
+        )
+        self.assertIn(
+            "named_location_confirmation", plan.boundary_resolution.missing_information
+        )
         self.assertFalse(plan.runnable)
 
     def test_missing_dates_are_clarifications_and_invented_years_are_discarded(self) -> None:
         provider = FakeProvider(
             interpretation_payload(vegetation=True, start_year=2020, end_year=2024)
         )
-        interpreted = interpret_request(provider, "Compare vegetation here.", aoi_confirmed=True)
+        interpreted = interpret_request(provider, "Compare vegetation here.")
         self.assertIsNone(interpreted.start_year)
         self.assertIsNone(interpreted.end_year)
         self.assertEqual(interpreted.missing_information, ("start_year", "end_year"))
@@ -199,11 +249,9 @@ class InterpretationTests(unittest.TestCase):
 
     def test_unconfirmed_aoi_blocks_an_otherwise_valid_vegetation_plan(self) -> None:
         provider = FakeProvider(interpretation_payload(vegetation=True))
-        interpreted = interpret_request(
-            provider, "Compare vegetation here from 2021 to 2025.", aoi_confirmed=False
-        )
-        self.assertIn("confirmed_boundary", interpreted.missing_information)
+        interpreted = interpret_request(provider, "Compare vegetation here from 2021 to 2025.")
         plan = build_tool_plan(interpreted, None, current_year=2026)
+        self.assertIn("confirmed_boundary", plan.boundary_resolution.missing_information)
         self.assertEqual(plan.status, "blocked")
         self.assertFalse(plan.runnable)
 
@@ -212,7 +260,6 @@ class InterpretationTests(unittest.TestCase):
         interpreted = interpret_request(
             provider,
             "Compare construction and roads here from 2021 to 2025.",
-            aoi_confirmed=True,
         )
         plan = build_tool_plan(interpreted, confirm_aoi(DEMO_BOUNDS), current_year=2026)
         self.assertEqual(interpreted.analyses, ("construction", "roads"))
@@ -227,7 +274,6 @@ class InterpretationTests(unittest.TestCase):
         interpreted = interpret_request(
             provider,
             "Compare vegetation and construction here from 2021 to 2025.",
-            aoi_confirmed=True,
         )
         plan = build_tool_plan(interpreted, confirm_aoi(DEMO_BOUNDS), current_year=2026)
         self.assertEqual(plan.status, "partial_support")
@@ -241,7 +287,6 @@ class ToolExecutionTests(unittest.TestCase):
         interpreted = interpret_request(
             provider,
             "Compare vegetation and construction here from 2021 to 2025.",
-            aoi_confirmed=True,
         )
         plan = build_tool_plan(interpreted, confirm_aoi(DEMO_BOUNDS), current_year=2026)
 
@@ -266,9 +311,7 @@ class ToolExecutionTests(unittest.TestCase):
 
     def test_tool_failure_is_recorded_without_arbitrary_execution(self) -> None:
         provider = FakeProvider(interpretation_payload(vegetation=True))
-        interpreted = interpret_request(
-            provider, "Compare vegetation here from 2021 to 2025.", aoi_confirmed=True
-        )
+        interpreted = interpret_request(provider, "Compare vegetation here from 2021 to 2025.")
         plan = build_tool_plan(interpreted, confirm_aoi(DEMO_BOUNDS), current_year=2026)
 
         def failed_runner(_request, _output_root, _cache_root):

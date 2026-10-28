@@ -84,8 +84,6 @@ class InterpretedRequest:
     start_year: int | None
     end_year: int | None
     uses_confirmed_boundary: bool
-    boundary_source: str | None
-    boundary_label: str | None
     named_location: str | None
     missing_information: tuple[str, ...]
     evidence: Mapping[str, str | None]
@@ -100,12 +98,10 @@ class InterpretedRequest:
             "start_year": self.start_year,
             "end_year": self.end_year,
             "boundary_reference": (
-                "current_confirmed_map_boundary"
+                "explicit_current_map_reference"
                 if self.uses_confirmed_boundary
-                else "missing_or_unspecified"
+                else "not_explicit_in_source_text"
             ),
-            "boundary_source": self.boundary_source,
-            "boundary_label": self.boundary_label,
             "named_location": self.named_location,
             "missing_information": list(self.missing_information),
             "evidence": dict(self.evidence),
@@ -116,8 +112,31 @@ class InterpretedRequest:
 
 
 @dataclass(frozen=True)
+class BoundaryResolution:
+    confirmed: bool
+    source: str | None
+    active_aoi_source: str | None
+    label: str | None
+    bounds_wgs84: tuple[float, float, float, float] | None
+    named_location_conflict: bool
+    missing_information: tuple[str, ...]
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "confirmed": self.confirmed,
+            "source": self.source,
+            "active_aoi_source": self.active_aoi_source,
+            "label": self.label,
+            "bounds_wgs84": list(self.bounds_wgs84) if self.bounds_wgs84 else None,
+            "named_location_conflict": self.named_location_conflict,
+            "missing_information": list(self.missing_information),
+        }
+
+
+@dataclass(frozen=True)
 class ToolPlan:
     interpretation: InterpretedRequest
+    boundary_resolution: BoundaryResolution
     status: str
     tools: tuple[Mapping[str, Any], ...]
     historical_request: HistoricalRequest | None
@@ -130,11 +149,10 @@ class ToolPlan:
     def record(self) -> dict[str, Any]:
         return {
             "status": self.status,
+            "raw_model_interpretation": self.interpretation.record(),
             "interpretation": self.interpretation.record(),
-            "boundary_context": {
-                "source": self.interpretation.boundary_source,
-                "label": self.interpretation.boundary_label,
-            },
+            "boundary_resolution": self.boundary_resolution.record(),
+            "boundary_context": self.boundary_resolution.record(),
             "tools": [dict(tool) for tool in self.tools],
             "validation_errors": list(self.validation_errors),
         }
@@ -346,9 +364,6 @@ def _validate_interpretation_payload(value: Mapping[str, Any]) -> None:
 def interpret_request(
     provider: OllamaProvider,
     original_request: str,
-    aoi_confirmed: bool,
-    active_boundary_label: str | None = None,
-    active_boundary_source: str | None = None,
 ) -> InterpretedRequest:
     text = original_request.strip()
     if not text:
@@ -427,7 +442,6 @@ def interpret_request(
         discarded_years.append(end_year)
         end_year = None
     runtime_record["discarded_years_without_source_evidence"] = discarded_years
-    runtime_record["model_uses_confirmed_boundary"] = value["uses_confirmed_boundary"]
     analyses = tuple(
         name
         for name, field in (
@@ -444,28 +458,12 @@ def interpret_request(
         missing.append("start_year")
     if end_year is None:
         missing.append("end_year")
-    resolved_label = active_boundary_label or ("Confirmed map area" if aoi_confirmed else None)
-    resolved_source = active_boundary_source or ("application_state" if aoi_confirmed else None)
-    location_conflict = False
-    if named_location is not None and resolved_label is not None:
-        normalised_location = " ".join(re.findall(r"[a-z0-9]+", named_location.casefold()))
-        normalised_label = " ".join(re.findall(r"[a-z0-9]+", resolved_label.casefold()))
-        location_conflict = normalised_location not in normalised_label
-    elif named_location is not None:
-        location_conflict = True
-    boundary_resolved = aoi_confirmed and not location_conflict
-    if not aoi_confirmed:
-        missing.append("confirmed_boundary")
-    elif location_conflict:
-        missing.append("named_location_confirmation")
     return InterpretedRequest(
         text,
         analyses,
         start_year,
         end_year,
-        boundary_resolved,
-        resolved_source if boundary_resolved else None,
-        resolved_label if boundary_resolved else None,
+        value["uses_confirmed_boundary"],
         named_location,
         tuple(missing),
         evidence,
@@ -475,24 +473,65 @@ def interpret_request(
     )
 
 
+def resolve_boundary_context(
+    interpretation: InterpretedRequest,
+    aoi: ConfirmedAOI | None,
+    active_boundary_source: str | None = None,
+    active_boundary_label: str | None = None,
+) -> BoundaryResolution:
+    """Resolve the validated model request against authoritative application state."""
+    missing = list(interpretation.missing_information)
+    label = active_boundary_label or ("Confirmed map area" if aoi is not None else None)
+    named_location = interpretation.named_location
+    location_conflict = False
+    if named_location is not None and label is not None:
+        normalised_location = " ".join(re.findall(r"[a-z0-9]+", named_location.casefold()))
+        normalised_label = " ".join(re.findall(r"[a-z0-9]+", label.casefold()))
+        location_conflict = normalised_location not in normalised_label
+    elif named_location is not None:
+        location_conflict = True
+    if aoi is None:
+        missing.append("confirmed_boundary")
+    elif location_conflict:
+        missing.append("named_location_confirmation")
+    confirmed = aoi is not None and not location_conflict
+    return BoundaryResolution(
+        confirmed=confirmed,
+        source="application_state" if confirmed else None,
+        active_aoi_source=(active_boundary_source or "confirmed_map") if confirmed else None,
+        label=label if confirmed else None,
+        bounds_wgs84=aoi.bounds if confirmed else None,
+        named_location_conflict=location_conflict,
+        missing_information=tuple(missing),
+    )
+
+
 def build_tool_plan(
     interpretation: InterpretedRequest,
     aoi: ConfirmedAOI | None,
     current_year: int | None = None,
+    active_boundary_source: str | None = None,
+    active_boundary_label: str | None = None,
 ) -> ToolPlan:
+    boundary_resolution = resolve_boundary_context(
+        interpretation,
+        aoi,
+        active_boundary_source=active_boundary_source,
+        active_boundary_label=active_boundary_label,
+    )
     tools: list[dict[str, Any]] = []
     errors: list[str] = []
     historical_request: HistoricalRequest | None = None
     for analysis in interpretation.analyses:
         if analysis == "vegetation":
-            if interpretation.missing_information:
+            if boundary_resolution.missing_information:
                 tools.append({
                     "tool": "historical_vegetation",
                     "analysis": analysis,
                     "status": "blocked",
                     "reason": (
                         "Clarification required: "
-                        + ", ".join(interpretation.missing_information)
+                        + ", ".join(boundary_resolution.missing_information)
                     ),
                     "validated_arguments": None,
                 })
@@ -542,7 +581,14 @@ def build_tool_plan(
         status = "ready"
     else:
         status = "blocked"
-    return ToolPlan(interpretation, status, tuple(tools), historical_request, tuple(errors))
+    return ToolPlan(
+        interpretation,
+        boundary_resolution,
+        status,
+        tuple(tools),
+        historical_request,
+        tuple(errors),
+    )
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -622,7 +668,9 @@ def execute_tool_plan(
             "model": plan.interpretation.model,
             "identifier": f"{plan.interpretation.provider}/{plan.interpretation.model}",
         },
+        "raw_model_interpretation": plan.interpretation.record(),
         "validated_interpretation": plan.interpretation.record(),
+        "resolved_request_context": plan.boundary_resolution.record(),
         "tool_plan": plan.record(),
         "tool_executions": executions,
         "final_answer": None,

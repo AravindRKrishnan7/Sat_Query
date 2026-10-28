@@ -80,7 +80,7 @@ Streamlit reruns do not execute the tool again.
 
 ### Language-interface verification and limitations
 
-- 48 lightweight tests pass. Thirteen language-interface tests cover unavailable
+- 50 lightweight tests pass. Fifteen language-interface tests cover unavailable
   service, missing/invented dates, unconfirmed AOI, unsupported construction
   and roads, combined partial planning/execution, preset/application-state AOI
   resolution, conflicting places, boundary invalidation, tool failure, missing
@@ -96,6 +96,35 @@ Streamlit reruns do not execute the tool again.
 - Language-model interpretation remains fallible. Evidence and application
   validators limit its authority, and deterministic fallback remains the
   authoritative failure path.
+
+## Confirmed-AOI live integration correction
+
+The user-facing failure was reproduced and traced to the server process rather
+than a second checkout. Port 8501 was served by PID 85235 from
+`/Users/aravindrkrishnan/Dev/satquery`, the only SatQuery `app.py` found under
+the development tree, but that process had started at 21:30 before the
+confirmed-AOI integration was written. Its UI and planner matched commit
+`9cd1947`: the UI displayed “Confirmed AOI” while the old planner required an
+explicit source-text phrase such as “here.” It therefore blocked
+`compare the vegetation from 2022 to 2024` with `confirmed_boundary` despite
+the session containing a confirmed AOI.
+
+The request path now keeps two explicit records. `raw_model_interpretation`
+retains the validated model output and its literal evidence; a separate
+`boundary_resolution` resolves the authoritative `ConfirmedAOI` from
+Streamlit application state. The latter records source `application_state`,
+the active AOI source and label, exact WGS84 bounds, conflict status and final
+missing-information list. No boundary evidence is inserted into the raw model
+record. The planner receives the same `ConfirmedAOI` object shown by the UI.
+
+The exact request was exercised through Streamlit's interaction harness with
+real local `qwen3:8b`. With the Alappuzha preset confirmed, the raw model
+reported no explicit boundary reference and no boundary evidence; application
+state resolved bounds `[76.34, 9.48, 76.36, 9.5]`; the plan was ready for
+years 2022–2024 and displayed the explicit Run action. Separate real
+interaction tests kept an unconfirmed AOI blocked by `confirmed_boundary` and
+kept Kochi blocked by `named_location_confirmation`. Re-confirming even the
+same area now clears any stale blocked plan and chat state.
 
 ## Reproducible Alappuzha demo preset
 
@@ -234,8 +263,8 @@ cause.
 
 ### Historical verification and limitations
 
-- 48 lightweight tests pass: the original construction and two-date
-  vegetation regressions, eleven historical tests, and thirteen language-interface
+- 50 lightweight tests pass: the original construction and two-date
+  vegetation regressions, eleven historical tests, and fifteen language-interface
   tests. Historical coverage includes unconfirmed and oversized AOIs,
   stale-state invalidation, invalid dates/request size, unsupported
   construction, scaling representations, cache failure, missing-year
@@ -291,9 +320,9 @@ result-contract errors in user-facing language.
 
 - Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
   only in the project `.venv` and pinned in `requirements.in`.
-- All 48 lightweight tests pass. The six local-interface tests cover bounded
+- All 50 lightweight tests pass. The six local-interface tests cover bounded
   PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
-  and execution-record validation; eleven historical and thirteen language tests
+  and execution-record validation; eleven historical and fifteen language tests
   cover the contracts listed above.
 - Streamlit's integration harness rendered all three modes without exceptions
   and ran the construction, two-date vegetation and cached historical

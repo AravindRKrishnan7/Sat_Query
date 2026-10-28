@@ -13,10 +13,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from satquery.language import (  # noqa: E402
     LanguageModelError,
     OllamaProvider,
+    build_tool_plan,
     discover_ollama,
     interpret_request,
 )
-from satquery.historical import DEMO_AOI_LABEL  # noqa: E402
+from satquery.historical import DEMO_AOI_LABEL, DEMO_BOUNDS, confirm_aoi  # noqa: E402
 
 
 CASES = (
@@ -62,10 +63,10 @@ def main() -> int:
     outputs = []
     try:
         for text, expected in CASES:
-            interpreted = interpret_request(
-                provider,
-                text,
-                aoi_confirmed=True,
+            interpreted = interpret_request(provider, text)
+            plan = build_tool_plan(
+                interpreted,
+                confirm_aoi(DEMO_BOUNDS),
                 active_boundary_label=DEMO_AOI_LABEL,
                 active_boundary_source="demo_preset",
             )
@@ -73,9 +74,7 @@ def main() -> int:
                 "analyses": list(interpreted.analyses),
                 "start_year": interpreted.start_year,
                 "end_year": interpreted.end_year,
-                "missing": [
-                    item for item in interpreted.missing_information if item != "confirmed_boundary"
-                ],
+                "missing": list(plan.boundary_resolution.missing_information),
             }
             if actual != expected:
                 raise RuntimeError(f"compatibility mismatch for {text!r}: {actual!r} != {expected!r}")
