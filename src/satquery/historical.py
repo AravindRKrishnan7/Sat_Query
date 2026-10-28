@@ -268,6 +268,10 @@ def update_aoi_state(state: MutableMapping[str, Any], bounds: Sequence[float] | 
     state.pop("historical_confirmed_aoi", None)
     state.pop("historical_request", None)
     state.pop("historical_result", None)
+    state.pop("assistant_plan", None)
+    state.pop("assistant_execution", None)
+    state.pop("historical_answer", None)
+    state.pop("historical_chat", None)
     return True
 
 

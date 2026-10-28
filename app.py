@@ -49,6 +49,18 @@ from satquery.historical import (  # noqa: E402
     run_historical,
     update_aoi_state,
 )
+from satquery.language import (  # noqa: E402
+    LanguageModelError,
+    OllamaProvider,
+    ProviderInfo,
+    ToolPlan,
+    attach_final_answer,
+    build_tool_plan,
+    discover_ollama,
+    execute_tool_plan,
+    generate_supported_answer,
+    interpret_request,
+)
 from satquery.vegetation import (  # noqa: E402
     VegetationValidationError,
     load_config,
@@ -76,6 +88,11 @@ def _cached_change_model(
 
 def _streamlit_model_loader(source: Path, checkpoint: Path, device: Any, _torch: Any) -> tuple:
     return _cached_change_model(str(source.resolve()), str(checkpoint.resolve()), str(device))
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _cached_language_provider() -> ProviderInfo:
+    return discover_ollama()
 
 
 def _download(path: Path, label: str, mime: str, key: str) -> None:
@@ -446,7 +463,11 @@ def _historical_map() -> None:
             st.error(str(exc))
 
 
-def _show_historical_result(record: Mapping[str, Any]) -> None:
+def _show_historical_result(
+    record: Mapping[str, Any],
+    answer: Mapping[str, Any] | None = None,
+    assistant_execution: Mapping[str, Any] | None = None,
+) -> None:
     st.subheader("Historical vegetation timeline")
     status = record["status"]
     if status == "success":
@@ -455,6 +476,14 @@ def _show_historical_result(record: Mapping[str, Any]) -> None:
         st.warning(f"Partial result. Missing years: {record['missing_years']}")
     else:
         st.error("No requested year produced a suitable observation. Details are retained below.")
+
+    if answer:
+        st.markdown("### GeoLens assistant answer")
+        if answer.get("fallback_used"):
+            st.warning(f"Deterministic fallback used: {answer.get('fallback_reason')}")
+        else:
+            st.caption("Model prose accepted; every displayed numerical fact was inserted from tool results.")
+        st.markdown(str(answer.get("text", "")))
 
     cache = record["cache"]
     cache_columns = st.columns(2)
@@ -562,6 +591,14 @@ def _show_historical_result(record: Mapping[str, Any]) -> None:
                 "application/json",
                 "historical-json",
             )
+        if assistant_execution:
+            assistant_path = Path(assistant_execution["outputs"]["assistant_record"])
+            _download(
+                assistant_path,
+                "Download assistant audit record",
+                "application/json",
+                "historical-assistant-json",
+            )
         st.markdown("**Annual visual outputs**")
         for observation in record["annual_observations"]:
             if observation["status"] != "available":
@@ -633,34 +670,120 @@ def _historical_mode() -> None:
             st.error(str(exc))
     if st.button("Confirm this boundary", disabled=draft_aoi is None, type="primary"):
         st.session_state["historical_confirmed_aoi"] = draft_aoi
-        st.session_state.pop("historical_request", None)
-        st.session_state.pop("historical_result", None)
+        for key in (
+            "historical_request",
+            "historical_result",
+            "assistant_plan",
+            "assistant_execution",
+            "historical_answer",
+            "historical_chat",
+        ):
+            st.session_state.pop(key, None)
         st.success("Boundary confirmed. Request controls are now enabled.")
 
     confirmed = st.session_state.get("historical_confirmed_aoi")
-    if not isinstance(confirmed, ConfirmedAOI):
+    if isinstance(confirmed, ConfirmedAOI):
+        st.success(
+            f"Confirmed AOI: {confirmed.bounds}; approximately {confirmed.area_square_km:.3f} km²."
+        )
+    else:
         st.warning("No area is confirmed. Drawing or loading a rectangle does not confirm it automatically.")
-        return
-    st.success(
-        f"Confirmed AOI: {confirmed.bounds}; approximately {confirmed.area_square_km:.3f} km²."
-    )
 
-    st.markdown("### Request")
-    st.caption(
-        "Structured-request mode — no configured LLM service was found. Chat text is shown back to "
-        "you but is not silently interpreted or sent to a paid API."
+    st.markdown("### Ask GeoLens")
+    provider_info = _cached_language_provider()
+    if provider_info.available:
+        st.success(
+            f"Local language model ready: {provider_info.identifier}. Requests stay on this machine."
+        )
+    else:
+        st.warning(f"Local language model unavailable: {provider_info.reason}")
+        st.code("ollama serve\nollama pull qwen3:8b\n.venv/bin/python scripts/check_llm.py")
+    prompt = st.chat_input(
+        "Example: Compare vegetation here from 2021 to 2025",
+        disabled=not provider_info.available,
     )
-    prompt = st.chat_input("Example: Compare vegetation changes here from 2021 to 2025")
     if prompt:
-        st.session_state.setdefault("historical_chat", []).append({"role": "user", "content": prompt})
-        st.session_state["historical_chat"].append({
-            "role": "assistant",
-            "content": "No LLM is configured. Use the validated controls below; your message was not interpreted.",
-        })
+        for key in (
+            "assistant_plan",
+            "assistant_execution",
+            "historical_answer",
+            "historical_request",
+            "historical_result",
+        ):
+            st.session_state.pop(key, None)
+        st.session_state["historical_chat"] = [{"role": "user", "content": prompt}]
+        try:
+            with st.status("Interpreting and validating the request...", expanded=True) as status:
+                provider = OllamaProvider(provider_info)
+                interpreted = interpret_request(
+                    provider,
+                    prompt,
+                    aoi_confirmed=isinstance(confirmed, ConfirmedAOI),
+                )
+                plan = build_tool_plan(
+                    interpreted,
+                    confirmed if isinstance(confirmed, ConfirmedAOI) else None,
+                    current_year=datetime.now(timezone.utc).year,
+                )
+                status.update(label="Request interpretation complete", state="complete", expanded=False)
+            st.session_state["assistant_plan"] = plan
+            st.session_state["historical_chat"].append({
+                "role": "assistant",
+                "content": (
+                    f"Interpreted analyses: {', '.join(interpreted.analyses) or 'none'}. "
+                    f"Plan status: {plan.status}. Review the validated plan before running it."
+                ),
+            })
+        except LanguageModelError as exc:
+            st.session_state["historical_chat"].append({
+                "role": "assistant",
+                "content": f"The local model response was not accepted: {exc}",
+            })
     for message in st.session_state.get("historical_chat", []):
         with st.chat_message(message["role"]):
             st.write(message["content"])
 
+    assistant_plan = st.session_state.get("assistant_plan")
+    if isinstance(assistant_plan, ToolPlan):
+        st.markdown("#### Validated interpretation and tool plan")
+        st.json(assistant_plan.record())
+        if assistant_plan.interpretation.missing_information:
+            st.warning(
+                "Clarification required: "
+                + ", ".join(assistant_plan.interpretation.missing_information)
+                + ". Submit a complete follow-up request."
+            )
+        for tool in assistant_plan.tools:
+            if tool.get("status") == "unsupported_in_historical_mode":
+                st.warning(str(tool.get("reason")))
+        if assistant_plan.runnable and st.button("Run interpreted request", type="primary"):
+            with st.status("Executing validated GeoLens tools...", expanded=True) as status:
+                execution, tool_result = execute_tool_plan(
+                    assistant_plan,
+                    GEOLENS_OUTPUTS / "assistant",
+                    GEOLENS_OUTPUTS / "historical",
+                    HISTORICAL_CACHE,
+                )
+                if tool_result is not None:
+                    provider = OllamaProvider(provider_info)
+                    answer = generate_supported_answer(provider, tool_result)
+                    execution = attach_final_answer(execution, answer)
+                    st.session_state["historical_result"] = tool_result
+                    st.session_state["historical_answer"] = answer
+                st.session_state["assistant_execution"] = execution
+                status.update(
+                    label="Validated tool execution complete",
+                    state="complete" if execution["status"] != "failed" else "error",
+                    expanded=False,
+                )
+            if execution["status"] == "failed":
+                st.error("The validated tool failed. The error is retained in the assistant audit record.")
+
+    if not isinstance(confirmed, ConfirmedAOI):
+        return
+
+    st.markdown("### Manual structured request")
+    st.caption("This remains available as a non-LLM fallback and uses the same validators and tool.")
     control_columns = st.columns(3)
     analysis_label = control_columns[0].selectbox(
         "Requested analysis",
@@ -679,6 +802,8 @@ def _historical_mode() -> None:
         st.session_state["historical_controls_signature"] = control_signature
         st.session_state.pop("historical_request", None)
         st.session_state.pop("historical_result", None)
+        st.session_state.pop("assistant_execution", None)
+        st.session_state.pop("historical_answer", None)
 
     observation_count = end_year - start_year + 1
     st.write(
@@ -694,6 +819,8 @@ def _historical_mode() -> None:
             validated = build_request(confirmed, start_year, end_year, analysis=analysis)
             st.session_state["historical_request"] = validated
             st.session_state.pop("historical_result", None)
+            st.session_state.pop("assistant_execution", None)
+            st.session_state.pop("historical_answer", None)
         except HistoricalValidationError as exc:
             st.error(str(exc))
 
@@ -718,7 +845,13 @@ def _historical_mode() -> None:
 
     result = st.session_state.get("historical_result")
     if isinstance(result, Mapping):
-        _show_historical_result(result)
+        answer = st.session_state.get("historical_answer")
+        assistant_execution = st.session_state.get("assistant_execution")
+        _show_historical_result(
+            result,
+            answer if isinstance(answer, Mapping) else None,
+            assistant_execution if isinstance(assistant_execution, Mapping) else None,
+        )
 
 
 def main() -> None:

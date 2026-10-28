@@ -4,7 +4,95 @@ Status verified on 2026-10-28. The working implementation has two independent
 analysis paths: Change-Agent RGB inference and deterministic Sentinel-2
 Level-2A NDVI processing. GeoLens exposes construction, corrected two-date
 vegetation, and bounded historical vegetation workflows. Neither NDVI workflow
-calls an AI model.
+uses an AI model for its calculations. A separate local language-model layer
+now interprets requests and selects validated result statements without
+changing either analysis path.
+
+## Local language-model interface
+
+GeoLens now connects to the existing loopback Ollama service. The environment
+contained Ollama 0.32.5 and these local models: `qwen3:8b`, `qwen3.5:4b`,
+`mistral:latest`, `qwen2.5:7b`, `llama3.2:3b`, and the
+`nomic-embed-text` embedding model. No external API provider variable or Python
+client was configured, and no paid service or model download was used.
+
+The tested runtime is `ollama/qwen3:8b` (8.2B, Q4_K_M). It advertises
+completion, tool and thinking capabilities. Ollama's local `/api/chat` JSON
+schema output was tested directly. `qwen3.5:4b` obeyed the first schema but
+duplicated vegetation intent and invented clarification fields, so it was not
+accepted as the default.
+
+The initial `qwen3:8b` missing-date test also invented a year range. GeoLens
+now requires exact source-text evidence for every asserted analysis and map
+reference, and accepts a year only if its exact token occurs in the original
+question. The strengthened four-case real compatibility run passed:
+
+- vegetation here from 2021 to 2025 → vegetation only, correct years and
+  boundary reference;
+- construction and roads → both intents preserved, not substituted with
+  vegetation;
+- vegetation and construction → both intents preserved for a partial-support
+  plan;
+- vegetation with no dates → start and end years reported as missing rather
+  than filled by the model.
+
+The model cannot receive or generate an AOI coordinate field. The application
+still requires an explicitly confirmed map boundary and applies the existing
+year, request-size, seasonal, quality, cache and sensor validators. Unsupported
+construction/road intent is retained in the plan with the exact requirement
+for aligned 256 × 256 RGB inputs in Construction changes mode. The model can
+invoke no Python, shell command or arbitrary tool: only the predefined
+historical vegetation wrapper can reach `run_historical`, and only after the
+user reviews the plan and clicks Run.
+
+Final-answer generation receives a compact copy of actual dates, missing
+years, coverage, metrics, pixel populations, limitations and output
+references. The model returns only schema-constrained statement codes and all
+required fact IDs. Dates and numerical claims are rendered from the tool
+record, not model prose. Missing/invented fact IDs or an inconsistent
+conclusion triggers a visibly labelled deterministic fallback.
+
+### Real end-to-end language-model verification
+
+Request: `Compare vegetation here from 2021 to 2025.`
+
+Assistant audit record:
+`outputs/geolens/assistant/assistant-20261028T163108448718Z-2c6a6a9a8e/assistant.json`
+
+The real model interpreted vegetation only, years 2021–2025, and `here` as the
+confirmed boundary. The validated historical tool ran from the explicit
+Streamlit Run action using the matching cache. Its result remained honestly
+partial: 2022 was missing, while 2021, 2023, 2024 and 2025 were available. The
+model returned all six required fact IDs with
+`partial_historical_ndvi_comparison` and
+`missing_years_limit_comparison`; answer validation passed without fallback.
+The displayed answer used the actual dates, 76.83% all-observation
+common-valid coverage, the fixed-population annual NDVI means, 84.23%
+first/last pair coverage and the documented population distinction.
+
+The audit record contains the original question, provider/model identifier,
+exact evidence, validated interpretation, selected tool and arguments,
+execution status, result references and final answer metadata. Question, draft
+AOI or boundary confirmation changes clear stale plans and answers. Ordinary
+Streamlit reruns do not execute the tool again.
+
+### Language-interface verification and limitations
+
+- 42 lightweight tests pass. Nine language-interface tests cover unavailable
+  service, missing/invented dates, unconfirmed AOI, unsupported construction
+  and roads, combined partial planning/execution, tool failure, missing
+  numerical fact references and accepted deterministic fact rendering.
+- The real four-case `scripts/check_llm.py` compatibility test passed with
+  `qwen3:8b`.
+- Streamlit's integration harness completed the real natural-language request,
+  plan review, explicit tool execution, maps/charts, non-fallback answer and 14
+  downloads without exceptions.
+- The integration is deliberately local-Ollama-only. It does not implement a
+  cloud-provider adapter or conversational slot filling; an incomplete request
+  must be resubmitted with the displayed missing fields.
+- Language-model interpretation remains fallible. Evidence and application
+  validators limit its authority, and deterministic fallback remains the
+  authoritative failure path.
 
 ## Historical GeoLens workflow
 
@@ -21,9 +109,9 @@ construction and corrected two-date modes. It provides:
   yearly/common coverage requirements, denominator epsilon and NDVI threshold;
 - two to five annual observations (2021–2025 by default), with the adjacent
   comparison count shown before execution;
-- an explicit structured-request mode. No configured LLM client, endpoint or
-  API key was found, so chat text is not parsed, sent externally or presented
-  as an LLM result;
+- a real local-Ollama chat mode plus manual structured controls. The model
+  produces an evidence-backed typed plan but cannot execute before validation
+  and an explicit Run action;
 - honest rejection of historical construction/road requests. The MCI model is
   never applied to Sentinel-2 timeline data;
 - exact-AOI search and raster caches, bounded metadata retries, per-year
@@ -93,11 +181,11 @@ cause.
 
 ### Historical verification and limitations
 
-- 33 lightweight tests pass: the original construction and two-date
-  vegetation regressions plus nine historical tests covering unconfirmed and
-  oversized AOIs, stale-state invalidation, invalid dates/request size,
-  unsupported construction, Collection-1 and legacy scaling representations,
-  network failure with and without matching search/asset caches, missing-year
+- 42 lightweight tests pass: the original construction and two-date
+  vegetation regressions, nine historical tests, and nine language-interface
+  tests. Historical coverage includes unconfirmed and oversized AOIs,
+  stale-state invalidation, invalid dates/request size, unsupported
+  construction, scaling representations, cache failure, missing-year
   adjacency, and insufficient common coverage.
 - Streamlit's integration harness performed the real cached historical flow
   from demo-boundary loading through explicit confirmation, validation,
@@ -116,8 +204,9 @@ cause.
 
 GeoLens is now a local Streamlit interface over the construction, corrected
 two-date vegetation, and historical vegetation execution functions. It leaves
-the `satquery` package and repository name unchanged and adds no LLM, agent
-framework, authentication, database, or deployment.
+the `satquery` package and repository name unchanged. It adds a constrained
+local Ollama interface but no agent framework, authentication, database,
+cloud-model dependency, or deployment.
 
 Construction mode:
 
@@ -149,10 +238,10 @@ result-contract errors in user-facing language.
 
 - Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
   only in the project `.venv` and pinned in `requirements.in`.
-- All 33 lightweight tests pass. The six local-interface tests cover bounded
+- All 42 lightweight tests pass. The six local-interface tests cover bounded
   PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
-  and execution-record validation; nine historical tests cover the contracts
-  listed above.
+  and execution-record validation; nine historical and nine language tests
+  cover the contracts listed above.
 - Streamlit's integration harness rendered all three modes without exceptions
   and ran the construction, two-date vegetation and cached historical
   workflows against real local assets, not mocks.

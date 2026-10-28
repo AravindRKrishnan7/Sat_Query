@@ -80,12 +80,18 @@ class HistoricalValidationTests(unittest.TestCase):
             "historical_confirmed_aoi": object(),
             "historical_request": object(),
             "historical_result": object(),
+            "assistant_plan": object(),
+            "assistant_execution": object(),
+            "historical_answer": object(),
         }
         changed = update_aoi_state(state, (76.341, 9.48, 76.361, 9.50))
         self.assertTrue(changed)
         self.assertNotIn("historical_confirmed_aoi", state)
         self.assertNotIn("historical_request", state)
         self.assertNotIn("historical_result", state)
+        self.assertNotIn("assistant_plan", state)
+        self.assertNotIn("assistant_execution", state)
+        self.assertNotIn("historical_answer", state)
         self.assertFalse(update_aoi_state(state, (76.341, 9.48, 76.361, 9.50)))
 
     def test_invalid_dates_and_unsupported_analysis_are_rejected(self) -> None:

@@ -9,14 +9,17 @@ workflows over two independent analysis paths:
 - A bounded historical Sentinel-2 annual NDVI timeline for a user-confirmed
   rectangle.
 
-The vegetation workflow is numerical geospatial processing; it does not load
-or call an AI model. The existing Change-Agent path remains independent.
+The vegetation calculations remain deterministic numerical geospatial
+processing. A separate, constrained local language-model layer may interpret a
+request and explain validated tool results; it does not calculate or alter
+reflectance, masks, NDVI, retrieval or model predictions.
 
 ## Launch GeoLens locally
 
 GeoLens is the local Streamlit interface around those existing analysis paths.
-It does not add an LLM, agent framework, authentication, database, or public
-deployment.
+It supports a loopback-only Ollama request interface but adds no agent
+framework, authentication, database, cloud language-model dependency, or
+public deployment.
 
 Prerequisites:
 
@@ -26,7 +29,10 @@ Prerequisites:
 - run `.venv/bin/python scripts/prepare_vegetation_sample.py` once if the fixed
   Sentinel-2 sample is not already present;
 - allow outbound HTTPS to Element 84 Earth Search only when running a new
-  historical request; no satellite data is downloaded at app startup.
+  historical request; no satellite data is downloaded at app startup;
+- for natural-language requests, start a local Ollama service with the tested
+  `qwen3:8b` model as described below. Manual structured controls remain
+  available when Ollama is unavailable.
 
 Launch the app from the repository root with exactly:
 
@@ -60,9 +66,9 @@ explicitly confirm it before validating the request. Changing the rectangle or
 year controls invalidates the old request and result. The structured request
 supports two to five annual observations, defaults to 2021–2025, and rejects
 historical construction/road requests rather than applying the fine-resolution
-MCI model to Sentinel-2. A chat-style field is present, but no LLM service
-exists in this repository or environment, so it clearly directs the user to
-the validated controls and does not interpret the text.
+MCI model to Sentinel-2. Its chat field uses the local model only to extract a
+typed plan and choose from constrained, validated result statements. Analysis
+still starts only after an explicit Run action.
 
 GeoLens writes every execution to a new ignored directory beneath
 `outputs/geolens/`. Uploaded images receive unique internal filenames; weights,
@@ -113,6 +119,64 @@ unique ignored directory under `outputs/geolens/historical/`. A verified repeat
 loaded all 20 selected band windows from cache and did not retrieve another
 AOI's data. Annual true-colour/NDVI PNGs, available difference PNGs, the
 deterministic summary and result JSON are downloadable in the app.
+
+## Local language-model interface
+
+The verified provider is local Ollama 0.32.5 with the already-installed
+`qwen3:8b` model (8.2B parameters, Q4_K_M). No OpenAI, Azure OpenAI,
+Anthropic, Google or other external API credential/provider was configured or
+used. GeoLens accepts only a loopback Ollama endpoint and never downloads a
+model automatically.
+
+Start and verify the service:
+
+```sh
+ollama serve
+# Run this only when the model is not already installed:
+ollama pull qwen3:8b
+.venv/bin/python scripts/check_llm.py
+```
+
+The optional configuration variables are:
+
+```sh
+export GEOLENS_OLLAMA_URL=http://127.0.0.1:11434
+export GEOLENS_OLLAMA_MODEL=qwen3:8b
+```
+
+The compatibility command makes four small structured-output calls covering
+vegetation, construction plus roads, a combined request, and omitted dates. It
+does not run satellite retrieval. The app only probes Ollama's model list on
+startup; it loads the model after the user submits a question.
+
+Interpretation uses a JSON schema with separate vegetation, construction and
+road intents, years, and a reference to the current boundary. Every asserted
+intent and boundary reference must include an exact source-text quotation.
+Extracted years are discarded unless the exact year token occurs in the
+question. The result is then passed through the existing AOI, date-range,
+five-observation and sensor-suitability validators. The model receives no
+coordinate field and cannot create or replace a confirmed AOI.
+
+The plan preserves unsupported construction/road intent and explains that
+aligned 256 × 256 RGB before/after inputs are required in Construction changes
+mode. A combined request can run the supported historical vegetation tool only
+after the plan is reviewed and the user clicks **Run interpreted request**.
+GeoLens never executes model-generated code, shell commands or arbitrary tool
+names.
+
+For the final answer, the model receives a compact result containing actual
+dates, missing years, coverage, metrics, pixel populations, limitations and
+output references. It may return only schema-constrained statement codes and
+validated fact IDs. All displayed numbers are inserted from the execution
+record; missing or invented fact IDs reject the response. A visibly labelled
+deterministic summary is used if the model call or validation fails.
+
+Each interpreted execution writes an ignored
+`outputs/geolens/assistant/assistant-*/assistant.json` audit record containing
+the original question, provider/model, evidence-backed interpretation,
+validated tool arguments, execution status, result references/errors and final
+answer validation metadata. Changing the question or AOI invalidates the old
+plan and result.
 
 ## Current status
 
