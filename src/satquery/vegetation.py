@@ -19,6 +19,8 @@ from PIL import Image, ImageDraw
 
 
 FLOAT_NODATA = -9999.0
+NDVI_PALETTE = ((0.0, (120, 68, 35)), (0.5, (245, 231, 145)), (1.0, (0, 95, 45)))
+DELTA_PALETTE = ((0.0, (178, 24, 43)), (0.5, (255, 255, 255)), (1.0, (33, 102, 172)))
 SCL_CLASSES = {
     0: "no_data",
     1: "saturated_or_defective",
@@ -668,6 +670,7 @@ def _true_color_image(
     gamma: float,
 ) -> tuple[Image.Image, dict[str, int]]:
     normalized = np.clip((reflectance - low) / (high - low), 0.0, 1.0)
+    normalized[~np.isfinite(normalized)] = 0.0
     displayed = np.power(normalized, 1.0 / gamma)
     rgb = np.rint(displayed * 255.0).astype(np.uint8)
     rgb[~valid] = (190, 190, 190)
@@ -676,6 +679,33 @@ def _true_color_image(
         "above_range_values": int(np.count_nonzero(valid[..., None] & (reflectance > high))),
         "excluded_pixels": int(np.count_nonzero(~valid)),
     }
+
+
+def render_ndvi(values: np.ndarray) -> Image.Image:
+    """Render NDVI with the workflow's fixed display palette and range."""
+    return _colorize(values, -1.0, 1.0, NDVI_PALETTE)
+
+
+def render_ndvi_difference(values: np.ndarray, limit: float = 1.0) -> Image.Image:
+    """Render an NDVI difference with the workflow's zero-centred palette."""
+    if not math.isfinite(limit) or limit <= 0:
+        raise ValueError("NDVI difference display limit must be a positive finite number")
+    return _colorize(values, -limit, limit, DELTA_PALETTE)
+
+
+def render_true_color(
+    reflectance: np.ndarray,
+    valid: np.ndarray,
+    low: float = 0.0,
+    high: float = 0.3,
+    gamma: float = 2.2,
+) -> tuple[Image.Image, dict[str, int]]:
+    """Render B04/B03/B02 reflectance using documented display-only settings."""
+    if reflectance.ndim != 3 or reflectance.shape[-1] != 3 or valid.shape != reflectance.shape[:2]:
+        raise ValueError("true-colour reflectance must be HxWx3 with a matching HxW validity mask")
+    if not all(math.isfinite(value) for value in (low, high, gamma)) or high <= low or gamma <= 0:
+        raise ValueError("true-colour display range and gamma are invalid")
+    return _true_color_image(reflectance, valid, low, high, gamma)
 
 
 def _draw_colorbar(
@@ -704,30 +734,28 @@ def _comparison_png(
     interpretation: Mapping[str, Any],
     threshold: float,
 ) -> dict[str, Any]:
-    ndvi_palette = ((0.0, (120, 68, 35)), (0.5, (245, 231, 145)), (1.0, (0, 95, 45)))
-    delta_palette = ((0.0, (178, 24, 43)), (0.5, (255, 255, 255)), (1.0, (33, 102, 172)))
     delta_limit = 1.0
     panels = (
         (
             f"Before NDVI: {before.acquisition_date}",
-            _colorize(before.ndvi, -1.0, 1.0, ndvi_palette),
+            render_ndvi(before.ndvi),
             -1.0,
             1.0,
-            ndvi_palette,
+            NDVI_PALETTE,
         ),
         (
             f"After NDVI: {after.acquisition_date}",
-            _colorize(after.ndvi, -1.0, 1.0, ndvi_palette),
+            render_ndvi(after.ndvi),
             -1.0,
             1.0,
-            ndvi_palette,
+            NDVI_PALETTE,
         ),
         (
             "NDVI difference (after - before)",
-            _colorize(delta, -delta_limit, delta_limit, delta_palette),
+            render_ndvi_difference(delta, delta_limit),
             -delta_limit,
             delta_limit,
-            delta_palette,
+            DELTA_PALETTE,
         ),
     )
     panel_width = max(256, before.ndvi.shape[1])
@@ -744,10 +772,10 @@ def _comparison_png(
         reflectance_low = 0.0
         reflectance_high = 0.3
         gamma = 2.2
-        before_rgb, before_counts = _true_color_image(
+        before_rgb, before_counts = render_true_color(
             before.true_color, before.true_color_valid, reflectance_low, reflectance_high, gamma
         )
-        after_rgb, after_counts = _true_color_image(
+        after_rgb, after_counts = render_true_color(
             after.true_color, after.true_color_valid, reflectance_low, reflectance_high, gamma
         )
         for x, title, image in (
