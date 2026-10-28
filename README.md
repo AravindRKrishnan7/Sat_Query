@@ -1,20 +1,22 @@
 # SatQuery AI
 
-SatQuery AI is an early satellite change-analysis prototype with two separate
-capabilities:
+SatQuery AI is an early satellite change-analysis prototype with three local
+workflows over two independent analysis paths:
 
 - Change-Agent MCI inference on an already aligned RGB image pair.
 - Deterministic NDVI comparison of two prepared Sentinel-2 Level-2A
   multispectral observations.
+- A bounded historical Sentinel-2 annual NDVI timeline for a user-confirmed
+  rectangle.
 
 The vegetation workflow is numerical geospatial processing; it does not load
 or call an AI model. The existing Change-Agent path remains independent.
 
 ## Launch GeoLens locally
 
-GeoLens is the local Streamlit interface around those two existing analysis
-paths. It does not add an LLM, agent framework, authentication, database, or
-public deployment.
+GeoLens is the local Streamlit interface around those existing analysis paths.
+It does not add an LLM, agent framework, authentication, database, or public
+deployment.
 
 Prerequisites:
 
@@ -22,7 +24,9 @@ Prerequisites:
 - run `./scripts/prepare_change_agent.sh` so the verified checkpoint and pinned
   upstream source are present;
 - run `.venv/bin/python scripts/prepare_vegetation_sample.py` once if the fixed
-  Sentinel-2 sample is not already present.
+  Sentinel-2 sample is not already present;
+- allow outbound HTTPS to Element 84 Earth Search only when running a new
+  historical request; no satellite data is downloaded at app startup.
 
 Launch the app from the repository root with exactly:
 
@@ -50,10 +54,65 @@ example” calls the corrected real-example configuration and displays its
 existing true-colour/NDVI comparison, provenance, common-valid coverage,
 persistent-vegetation statistics, threshold, warnings, and downloads.
 
+Historical vegetation mode starts with an unconfirmed map view over
+Alappuzha. Draw a rectangle, or load the documented demo rectangle, then
+explicitly confirm it before validating the request. Changing the rectangle or
+year controls invalidates the old request and result. The structured request
+supports two to five annual observations, defaults to 2021–2025, and rejects
+historical construction/road requests rather than applying the fine-resolution
+MCI model to Sentinel-2. A chat-style field is present, but no LLM service
+exists in this repository or environment, so it clearly directs the user to
+the validated controls and does not interpret the text.
+
 GeoLens writes every execution to a new ignored directory beneath
 `outputs/geolens/`. Uploaded images receive unique internal filenames; weights,
 prepared data, uploads, and generated results remain excluded from Git. The
 local upload limit is 10 MB per image.
+
+## Run the historical Alappuzha demonstration
+
+The documented rectangle is WGS84 bounds
+`[76.34, 9.48, 76.36, 9.50]`, approximately 4.878 km² and below the
+configurable 25 km² limit. A direct verification uses the same engine and
+defaults as the app:
+
+```sh
+.venv/bin/python scripts/run_historical_demo.py
+```
+
+For each year, GeoLens searches January 1–March 31 in
+[Element 84 Earth Search](https://github.com/Element84/earth-search)'s
+[`sentinel-2-c1-l2a` collection](https://earth-search.aws.element84.com/v1/collections/sentinel-2-c1-l2a).
+It ranks by catalogue cloud cover,
+inspects at most five candidates, and accepts the first with at least 80% SCL
+4/5/6 coverage inside the AOI. It never widens the season to hide a missing
+year. Only the AOI windows for blue, green, red, NIR and SCL are read.
+Continuous bands use bilinear resampling and SCL uses nearest neighbour on one
+10 m UTM grid.
+
+Collection-1 reflectance scaling is verified independently for every selected
+asset: item-level `raster:bands` scale/offset must exactly match the remote COG
+header before the affine conversion is applied. The verified acquisitions use
+`stored * 0.0001 - 0.1`. This differs from the legacy Earth Search assets in
+the two-date scaling audit; GeoLens does not reuse the legacy offset decision
+blindly. The annual true-colour panels use one fixed display-only 0.00–0.30
+reflectance range and gamma 2.2; neither setting changes reflectance or NDVI.
+
+The verified 2021–2025 run was partial: 2021-02-07, 2023-01-08, 2024-01-18
+and 2025-01-17 were accepted. The sole January–March 2022 candidate had only
+0.0247% accepted in-AOI SCL coverage, so 2022 remained unavailable. The
+population valid across all four available observations retained 76.83% of the
+AOI. Its mean NDVI was 0.4664 in 2021 and 0.4824 in 2025; this is an NDVI
+comparison, not evidence of vegetation gain/loss, plant health, deforestation,
+damage or cause. Adjacent comparisons touching 2022 are shown as unavailable
+and are not bridged.
+
+Exact-AOI search results and prepared raster windows are cached under the
+ignored `data/cache/geolens-historical/` tree. Each execution still creates a
+unique ignored directory under `outputs/geolens/historical/`. A verified repeat
+loaded all 20 selected band windows from cache and did not retrieve another
+AOI's data. Annual true-colour/NDVI PNGs, available difference PNGs, the
+deterministic summary and result JSON are downloadable in the app.
 
 ## Current status
 

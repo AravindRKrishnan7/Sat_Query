@@ -5,10 +5,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+import folium
 import streamlit as st
+from folium.plugins import Draw
+from streamlit_folium import st_folium
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -30,6 +34,21 @@ from satquery.geolens import (  # noqa: E402
     save_prepared_pair,
     validate_result_record,
 )
+from satquery.historical import (  # noqa: E402
+    DEFAULT_AREA_LIMIT_SQUARE_KM,
+    DEMO_BOUNDS,
+    MAX_ANNUAL_OBSERVATIONS,
+    SUPPORTED_FIRST_YEAR,
+    ConfirmedAOI,
+    HistoricalNetworkError,
+    HistoricalRequest,
+    HistoricalValidationError,
+    bounds_from_geojson,
+    build_request,
+    confirm_aoi,
+    run_historical,
+    update_aoi_state,
+)
 from satquery.vegetation import (  # noqa: E402
     VegetationValidationError,
     load_config,
@@ -41,6 +60,7 @@ CHECKPOINT = PROJECT_ROOT / "weights" / "MCI_model.pth"
 CHANGE_SOURCE = PROJECT_ROOT / ".cache" / "upstream" / "change-agent"
 VEGETATION_CONFIG = PROJECT_ROOT / "configs" / "vegetation.real-example.json"
 GEOLENS_OUTPUTS = PROJECT_ROOT / "outputs" / "geolens"
+HISTORICAL_CACHE = PROJECT_ROOT / "data" / "cache" / "geolens-historical"
 
 
 @st.cache_resource(show_spinner="Loading the verified Change-Agent model on CPU...")
@@ -374,19 +394,351 @@ def _vegetation_mode() -> None:
         _show_vegetation_result(record)
 
 
+def _historical_map() -> None:
+    draft_bounds = st.session_state.get("historical_draft_bounds")
+    map_view = folium.Map(location=[9.4981, 76.3388], zoom_start=12, tiles="OpenStreetMap")
+    if draft_bounds:
+        west, south, east, north = draft_bounds
+        folium.Rectangle(
+            bounds=[[south, west], [north, east]],
+            color="#2563eb",
+            weight=3,
+            fill=True,
+            fill_opacity=0.12,
+            tooltip="Current draft AOI — confirm below",
+        ).add_to(map_view)
+    confirmed = st.session_state.get("historical_confirmed_aoi")
+    if isinstance(confirmed, ConfirmedAOI):
+        folium.Rectangle(
+            bounds=[[confirmed.south, confirmed.west], [confirmed.north, confirmed.east]],
+            color="#15803d",
+            weight=3,
+            fill=False,
+            tooltip="Confirmed AOI",
+        ).add_to(map_view)
+    Draw(
+        export=False,
+        draw_options={
+            "polyline": False,
+            "polygon": False,
+            "circle": False,
+            "marker": False,
+            "circlemarker": False,
+            "rectangle": {"shapeOptions": {"color": "#2563eb"}},
+        },
+        edit_options={"edit": False, "remove": False},
+    ).add_to(map_view)
+    map_state = st_folium(
+        map_view,
+        key="historical-aoi-map",
+        height=500,
+        width=None,
+        returned_objects=["last_active_drawing", "all_drawings"],
+    )
+    drawing = map_state.get("last_active_drawing") if isinstance(map_state, Mapping) else None
+    geometry = drawing.get("geometry") if isinstance(drawing, Mapping) else None
+    if isinstance(geometry, Mapping):
+        try:
+            bounds = bounds_from_geojson(geometry)
+            if update_aoi_state(st.session_state, bounds):
+                st.rerun()
+        except HistoricalValidationError as exc:
+            st.error(str(exc))
+
+
+def _show_historical_result(record: Mapping[str, Any]) -> None:
+    st.subheader("Historical vegetation timeline")
+    status = record["status"]
+    if status == "success":
+        st.success("All requested annual observations are available.")
+    elif status == "partial":
+        st.warning(f"Partial result. Missing years: {record['missing_years']}")
+    else:
+        st.error("No requested year produced a suitable observation. Details are retained below.")
+
+    cache = record["cache"]
+    cache_columns = st.columns(2)
+    cache_columns[0].metric("Newly retrieved selected windows", cache["selected_asset_windows_retrieved"])
+    cache_columns[1].metric(
+        "Selected windows loaded from cache", cache["selected_asset_windows_loaded_from_cache"]
+    )
+    st.caption("Cache matching is tied to the exact confirmed AOI; another area's cache is never substituted.")
+
+    for observation in record["annual_observations"]:
+        year = observation["year"]
+        if observation["status"] != "available":
+            st.warning(f"{year}: unavailable — {observation.get('reason', 'no suitable observation')}")
+            continue
+        st.markdown(f"### {year} · acquired {observation['acquisition_date']}")
+        image_columns = st.columns(2)
+        image_columns[0].image(
+            observation["outputs"]["true_color_png"],
+            caption=f"{year} true colour · display stretch only",
+            width="stretch",
+        )
+        image_columns[1].image(
+            observation["outputs"]["ndvi_png"],
+            caption=f"{year} NDVI · grey pixels excluded",
+            width="stretch",
+        )
+        metrics = st.columns(4)
+        metrics[0].metric("Valid coverage", f"{observation['valid_coverage']:.1%}")
+        metrics[1].metric("Mean NDVI (year-valid)", f"{observation['per_year_ndvi']['mean']:.3f}")
+        metrics[2].metric("Median NDVI (year-valid)", f"{observation['per_year_ndvi']['median']:.3f}")
+        cloud = observation.get("catalogue_cloud_cover_percent")
+        metrics[3].metric("Catalogue scene cloud", f"{float(cloud):.2f}%" if cloud is not None else "unknown")
+        st.caption(
+            "The year-valid statistic uses this observation's own valid pixels and is not directly "
+            "comparable unless the all-observation common population below is sufficient."
+        )
+
+    trend = record["common_valid_trend"]
+    st.markdown("### Directly comparable trend")
+    st.metric("Pixels valid across every available observation", f"{trend['coverage']:.1%}")
+    if trend["sufficient"]:
+        chart_rows = trend["annual_statistics"]
+        st.line_chart(
+            {
+                "year": [item["year"] for item in chart_rows],
+                "mean NDVI": [item["mean"] for item in chart_rows],
+                "median NDVI": [item["median"] for item in chart_rows],
+            },
+            x="year",
+            y=["mean NDVI", "median NDVI"],
+        )
+    else:
+        st.warning(f"Comparable trend withheld: {trend['reason']}")
+
+    st.markdown("### Adjacent-observation NDVI differences")
+    st.caption(
+        "Blue = NDVI increase; red = NDVI decrease; white = little difference; grey = excluded. "
+        "Unavailable years are not bridged or relabelled as adjacent comparisons."
+    )
+    for difference in record["adjacent_differences"]:
+        if difference["status"] != "available":
+            st.warning(f"{difference['label']}: unavailable — {difference['reason']}")
+            continue
+        columns = st.columns((2, 1))
+        columns[0].image(
+            difference["outputs"]["difference_png"],
+            caption=f"{difference['before_date']} to {difference['after_date']} NDVI difference",
+            width="stretch",
+        )
+        categories = difference["categories"]
+        columns[1].metric("Valid pair coverage", f"{difference['valid_coverage']:.1%}")
+        columns[1].metric("NDVI increase", f"{categories['increased']['fraction']:.1%}")
+        columns[1].metric("NDVI decrease", f"{categories['decreased']['fraction']:.1%}")
+        columns[1].metric("Approximately stable", f"{categories['approximately_stable']['fraction']:.1%}")
+
+    first_last = record["first_to_last_difference"]
+    st.markdown("### First-to-last NDVI difference")
+    if first_last["status"] == "available":
+        st.image(
+            first_last["outputs"]["difference_png"],
+            caption=f"{first_last['before_date']} to {first_last['after_date']}",
+            width="stretch",
+        )
+    else:
+        st.warning(first_last["reason"])
+
+    st.warning(
+        "NDVI increase/decrease categories are not statistically significant change, confirmed "
+        "vegetation gain/loss, deforestation, improved plant health, damage, or a causal explanation."
+    )
+    summary_path = Path(record["outputs"]["summary"])
+    st.markdown("### Deterministic summary")
+    st.code(summary_path.read_text(encoding="utf-8"), language=None)
+
+    with st.expander("Data sources, downloads and execution details"):
+        st.write(record["provider"])
+        st.write({"confirmed_boundary": record["request"]["aoi"], "grid": record["grid"]})
+        downloads = st.columns(2)
+        with downloads[0]:
+            _download(summary_path, "Download summary", "text/plain", "historical-summary")
+        with downloads[1]:
+            _download(
+                Path(record["outputs"]["execution_record"]),
+                "Download result JSON",
+                "application/json",
+                "historical-json",
+            )
+        st.markdown("**Annual visual outputs**")
+        for observation in record["annual_observations"]:
+            if observation["status"] != "available":
+                continue
+            visual_columns = st.columns(2)
+            with visual_columns[0]:
+                _download(
+                    Path(observation["outputs"]["true_color_png"]),
+                    f"Download {observation['year']} true colour",
+                    "image/png",
+                    f"historical-{observation['year']}-rgb",
+                )
+            with visual_columns[1]:
+                _download(
+                    Path(observation["outputs"]["ndvi_png"]),
+                    f"Download {observation['year']} NDVI",
+                    "image/png",
+                    f"historical-{observation['year']}-ndvi",
+                )
+        st.markdown("**Difference visual outputs**")
+        for difference in record["adjacent_differences"]:
+            if difference["status"] != "available":
+                continue
+            _download(
+                Path(difference["outputs"]["difference_png"]),
+                f"Download {difference['label']} difference",
+                "image/png",
+                f"historical-{difference['label']}-difference",
+            )
+        if first_last["status"] == "available":
+            _download(
+                Path(first_last["outputs"]["difference_png"]),
+                "Download first-to-last difference",
+                "image/png",
+                "historical-first-last-difference",
+            )
+        st.json(record)
+
+
+def _historical_mode() -> None:
+    st.header("Historical vegetation analysis")
+    st.write(
+        "Draw and confirm a small rectangle, then request a bounded Sentinel-2 annual NDVI timeline. "
+        "The initial map view is centred on Alappuzha but is not a confirmed analysis area."
+    )
+    st.info(
+        f"Demo AOI limit: {DEFAULT_AREA_LIMIT_SQUARE_KM:.0f} km². The app retrieves only small "
+        "AOI raster windows and never applies the fine-resolution construction model to Sentinel-2."
+    )
+    map_actions = st.columns(2)
+    if map_actions[0].button("Load documented Alappuzha demo rectangle"):
+        update_aoi_state(st.session_state, DEMO_BOUNDS)
+        st.rerun()
+    if map_actions[1].button("Reset boundary and result"):
+        update_aoi_state(st.session_state, None)
+        st.rerun()
+    _historical_map()
+
+    draft = st.session_state.get("historical_draft_bounds")
+    draft_aoi = None
+    if draft:
+        try:
+            draft_aoi = confirm_aoi(draft)
+            st.write({
+                "draft_bounds_wgs84": [round(value, 7) for value in draft_aoi.bounds],
+                "approximate_area_square_km": round(draft_aoi.area_square_km, 3),
+            })
+        except HistoricalValidationError as exc:
+            st.error(str(exc))
+    if st.button("Confirm this boundary", disabled=draft_aoi is None, type="primary"):
+        st.session_state["historical_confirmed_aoi"] = draft_aoi
+        st.session_state.pop("historical_request", None)
+        st.session_state.pop("historical_result", None)
+        st.success("Boundary confirmed. Request controls are now enabled.")
+
+    confirmed = st.session_state.get("historical_confirmed_aoi")
+    if not isinstance(confirmed, ConfirmedAOI):
+        st.warning("No area is confirmed. Drawing or loading a rectangle does not confirm it automatically.")
+        return
+    st.success(
+        f"Confirmed AOI: {confirmed.bounds}; approximately {confirmed.area_square_km:.3f} km²."
+    )
+
+    st.markdown("### Request")
+    st.caption(
+        "Structured-request mode — no configured LLM service was found. Chat text is shown back to "
+        "you but is not silently interpreted or sent to a paid API."
+    )
+    prompt = st.chat_input("Example: Compare vegetation changes here from 2021 to 2025")
+    if prompt:
+        st.session_state.setdefault("historical_chat", []).append({"role": "user", "content": prompt})
+        st.session_state["historical_chat"].append({
+            "role": "assistant",
+            "content": "No LLM is configured. Use the validated controls below; your message was not interpreted.",
+        })
+    for message in st.session_state.get("historical_chat", []):
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+
+    control_columns = st.columns(3)
+    analysis_label = control_columns[0].selectbox(
+        "Requested analysis",
+        ("Vegetation NDVI timeline", "Construction/roads from historical Sentinel-2"),
+    )
+    current_year = datetime.now(timezone.utc).year
+    start_year = int(control_columns[1].number_input(
+        "Start year", min_value=SUPPORTED_FIRST_YEAR, max_value=current_year, value=2021, step=1
+    ))
+    end_year = int(control_columns[2].number_input(
+        "End year", min_value=SUPPORTED_FIRST_YEAR, max_value=current_year, value=2025, step=1
+    ))
+    analysis = "vegetation_ndvi" if analysis_label == "Vegetation NDVI timeline" else "construction"
+    control_signature = (confirmed.cache_key, start_year, end_year, analysis)
+    if st.session_state.get("historical_controls_signature") != control_signature:
+        st.session_state["historical_controls_signature"] = control_signature
+        st.session_state.pop("historical_request", None)
+        st.session_state.pop("historical_result", None)
+
+    observation_count = end_year - start_year + 1
+    st.write(
+        f"Requested annual observations: {observation_count}; adjacent comparisons: "
+        f"{max(0, observation_count - 1)}. Maximum allowed observations: {MAX_ANNUAL_OBSERVATIONS}."
+    )
+    st.caption(
+        "Season policy: January 1–March 31 for every year. Candidate ranking: lowest catalogue cloud "
+        "first, then require at least 80% valid SCL coverage inside the confirmed AOI."
+    )
+    if st.button("Validate structured request"):
+        try:
+            validated = build_request(confirmed, start_year, end_year, analysis=analysis)
+            st.session_state["historical_request"] = validated
+            st.session_state.pop("historical_result", None)
+        except HistoricalValidationError as exc:
+            st.error(str(exc))
+
+    validated_request = st.session_state.get("historical_request")
+    if isinstance(validated_request, HistoricalRequest):
+        st.success("Request validated. Analysis will use the exact confirmed AOI and fixed seasonal policy.")
+        with st.expander("Validated request"):
+            st.json(validated_request.record())
+        if st.button("Run historical analysis", type="primary"):
+            try:
+                with st.status("Searching and processing annual observations...", expanded=True) as status:
+                    st.write("Using bounded Earth Search queries and cached AOI windows where available")
+                    result = run_historical(
+                        validated_request,
+                        GEOLENS_OUTPUTS / "historical",
+                        HISTORICAL_CACHE,
+                    )
+                    status.update(label="Historical analysis complete", state="complete", expanded=False)
+                st.session_state["historical_result"] = result
+            except (HistoricalValidationError, HistoricalNetworkError, OSError, RuntimeError) as exc:
+                st.error(f"Historical analysis failed: {exc}")
+
+    result = st.session_state.get("historical_result")
+    if isinstance(result, Mapping):
+        _show_historical_result(result)
+
+
 def main() -> None:
     st.set_page_config(page_title="GeoLens", page_icon="🌍", layout="wide")
     st.title("GeoLens")
     st.caption("Local satellite change analysis using SatQuery's existing verified tools")
     st.sidebar.markdown("## Analysis mode")
-    mode = st.sidebar.radio("Choose a workflow", ("Construction changes", "Vegetation comparison"))
+    mode = st.sidebar.radio(
+        "Choose a workflow",
+        ("Construction changes", "Vegetation comparison", "Historical vegetation"),
+    )
     st.sidebar.caption(
         f"Local only · upload limit {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per image · no database"
     )
     if mode == "Construction changes":
         _construction_mode()
-    else:
+    elif mode == "Vegetation comparison":
         _vegetation_mode()
+    else:
+        _historical_mode()
 
 
 if __name__ == "__main__":

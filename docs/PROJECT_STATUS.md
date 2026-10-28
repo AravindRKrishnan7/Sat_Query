@@ -1,14 +1,123 @@
 # Project status
 
 Status verified on 2026-10-28. The working implementation has two independent
-paths: Change-Agent RGB inference and deterministic Sentinel-2 Level-2A NDVI
-comparison. The NDVI path does not call an AI model.
+analysis paths: Change-Agent RGB inference and deterministic Sentinel-2
+Level-2A NDVI processing. GeoLens exposes construction, corrected two-date
+vegetation, and bounded historical vegetation workflows. Neither NDVI workflow
+calls an AI model.
+
+## Historical GeoLens workflow
+
+GeoLens now has a map-based historical vegetation mode while preserving the
+construction and corrected two-date modes. It provides:
+
+- an Alappuzha-centred interactive map with rectangle drawing, explicit
+  confirmation, displayed WGS84 bounds and approximate area;
+- a configurable 25 km² limit and invalid/oversized selection rejection;
+- invalidation of confirmation, request and result when the draft AOI changes,
+  plus request/result invalidation when year or analysis controls change;
+- a typed request containing the confirmed geometry, years, requested
+  analysis, fixed January–March seasonal policy, candidate limit, SCL classes,
+  yearly/common coverage requirements, denominator epsilon and NDVI threshold;
+- two to five annual observations (2021–2025 by default), with the adjacent
+  comparison count shown before execution;
+- an explicit structured-request mode. No configured LLM client, endpoint or
+  API key was found, so chat text is not parsed, sent externally or presented
+  as an LLM result;
+- honest rejection of historical construction/road requests. The MCI model is
+  never applied to Sentinel-2 timeline data;
+- exact-AOI search and raster caches, bounded metadata retries, per-year
+  partial results and unique result directories.
+
+The provider was reverified as Element 84 Earth Search collection
+`sentinel-2-c1-l2a`. Each year uses the same January 1–March 31 window. Up to
+five candidates are ranked by ascending catalogue `eo:cloud_cover`, after
+which SCL 4/5/6 coverage is evaluated inside the actual AOI. The first
+candidate at or above 80% is accepted; the date window is never silently
+changed. Only small blue, green, red, NIR and SCL source windows are read.
+
+All acquisitions are prepared on one 10 m EPSG:32643 grid. Reflectance uses
+bilinear and SCL uses nearest-neighbour resampling. For every Collection-1
+reflectance asset, GeoLens requires the item `raster:bands` scale/offset to
+match the remote COG header before applying it. The real run independently
+verified `scale=0.0001, offset=-0.1` for all four reflectance assets on every
+accepted date. This preserves the provider-specific legacy correction rather
+than assuming the legacy and Collection-1 representations are identical.
+
+### Real Alappuzha verification
+
+Confirmed demo bounds: `[76.34, 9.48, 76.36, 9.50]` (approximately
+4.878 km²). The 222 × 223 grid contains 48,571 AOI pixel centres. The
+true-colour previews were inspected and show correctly located mixed built-up
+land, roads, fields and a small water edge; the area is not an empty or
+silently substituted cached tile.
+
+First network execution:
+`outputs/geolens/historical/run-20261028T154842968270Z-e767826459`
+
+| Requested year | Selected/evaluated item and date | Accepted AOI coverage | Outcome |
+| ---: | --- | ---: | --- |
+| 2021 | `S2B_T43PFL_20210207T052558_L2A`, 2021-02-07 | 99.7241% | available |
+| 2022 | `S2A_T43PFL_20220319T052227_L2A`, 2022-03-19 | 0.0247% | unavailable |
+| 2023 | `S2B_T43PFL_20230108T052433_L2A`, 2023-01-08 | 90.4346% | available |
+| 2024 | `S2A_T43PFL_20240118T052357_L2A`, 2024-01-18 | 97.7765% | available |
+| 2025 | `S2B_T43PFL_20250117T052047_L2A`, 2025-01-17 | 84.2807% | available |
+
+The only 2022 January–March catalogue candidate had 58.1173% scene cloud and
+failed the 80% in-AOI rule, so the missing year remains explicit. The
+2021→2022 and 2022→2023 adjacent comparisons are unavailable and no gap is
+bridged. The 2023→2024 and 2024→2025 comparisons are available, as is the
+2021→2025 endpoint comparison.
+
+The all-observation common-valid population across the four available dates is
+37,316 pixels, or 76.8277% of the AOI, above the configured 50% minimum. Mean
+NDVI on that fixed population is 0.466366 (2021), 0.487538 (2023), 0.513673
+(2024) and 0.482375 (2025). The first/last common-population mean difference is
++0.016009. The separately reported 2021→2025 pair-valid map covers 84.2272%
+and has mean difference +0.018086; these values use different documented pixel
+populations and are not interchangeable. All accepted observations had zero
+near-zero denominators and zero un-clipped NDVI values outside `[-1, 1]`.
+
+The first execution retrieved 20 selected reflectance/SCL AOI windows in
+64.3 seconds. A second execution at
+`outputs/geolens/historical/run-20261028T155002544406Z-3472d5bdec` loaded all
+20 selected windows from the matching exact-AOI cache in 0.20 seconds. The
+cached run reproduced the available/missing years, coverage and results.
+
+Annual true-colour and NDVI maps, available adjacent maps, the first-to-last
+map, common-valid mask, summary and full result JSON are retained. Display
+stretching remains separate from reflectance and NDVI. All descriptions use
+“NDVI increase/decrease” and explicitly avoid claims of statistically
+significant change, vegetation extent, plant health, deforestation, damage or
+cause.
+
+### Historical verification and limitations
+
+- 33 lightweight tests pass: the original construction and two-date
+  vegetation regressions plus nine historical tests covering unconfirmed and
+  oversized AOIs, stale-state invalidation, invalid dates/request size,
+  unsupported construction, Collection-1 and legacy scaling representations,
+  network failure with and without matching search/asset caches, missing-year
+  adjacency, and insufficient common coverage.
+- Streamlit's integration harness performed the real cached historical flow
+  from demo-boundary loading through explicit confirmation, validation,
+  execution and result rendering without exceptions.
+- The local server started at `http://127.0.0.1:8501`. No browser session was
+  connected to the available browser-control surface, so live visible-browser
+  interaction is not claimed.
+- Place search was optional and is not implemented; manual map selection and
+  the documented demo rectangle work independently.
+- The January–March policy is a configurable demonstration choice, not a
+  universally optimal season. Annual single acquisitions omit within-season
+  variability; SCL is imperfect; NDVI alone cannot establish land-cover
+  transition or cause; and no ground truth was used.
 
 ## Local GeoLens interface
 
-GeoLens is now a local Streamlit interface over the existing two execution
-functions. It leaves the `satquery` package and repository name unchanged and
-adds no LLM, agent framework, authentication, database, or deployment.
+GeoLens is now a local Streamlit interface over the construction, corrected
+two-date vegetation, and historical vegetation execution functions. It leaves
+the `satquery` package and repository name unchanged and adds no LLM, agent
+framework, authentication, database, or deployment.
 
 Construction mode:
 
@@ -38,13 +147,15 @@ result-contract errors in user-facing language.
 
 ### GeoLens verification
 
-- Streamlit 1.66.1 is installed only in the project `.venv` and pinned in
-  `requirements.in`.
-- All 24 lightweight tests pass. Six new tests cover bounded PNG/JPEG decoding,
-  explicit resizing, RGB rejection, unique run/input paths, and execution-record
-  validation.
-- Streamlit's integration harness rendered both modes without exceptions and
-  ran both workflows against real local assets, not mocks.
+- Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
+  only in the project `.venv` and pinned in `requirements.in`.
+- All 33 lightweight tests pass. The six local-interface tests cover bounded
+  PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
+  and execution-record validation; nine historical tests cover the contracts
+  listed above.
+- Streamlit's integration harness rendered all three modes without exceptions
+  and ran the construction, two-date vegetation and cached historical
+  workflows against real local assets, not mocks.
 - Construction used the current 1254 × 1254 repository sample through the
   explicit resize path and the real verified CPU checkpoint. Its execution at
   `outputs/geolens/construction/run-20261028T125540054743Z-54d42679ec`
