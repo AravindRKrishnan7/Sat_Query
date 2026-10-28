@@ -36,6 +36,7 @@ from satquery.geolens import (  # noqa: E402
 )
 from satquery.historical import (  # noqa: E402
     DEFAULT_AREA_LIMIT_SQUARE_KM,
+    DEMO_AOI_LABEL,
     DEMO_BOUNDS,
     MAX_ANNUAL_OBSERVATIONS,
     SUPPORTED_FIRST_YEAR,
@@ -44,6 +45,7 @@ from satquery.historical import (  # noqa: E402
     HistoricalRequest,
     HistoricalValidationError,
     bounds_from_geojson,
+    activate_confirmed_aoi,
     build_request,
     confirm_aoi,
     run_historical,
@@ -413,8 +415,12 @@ def _vegetation_mode() -> None:
 
 def _historical_map() -> None:
     draft_bounds = st.session_state.get("historical_draft_bounds")
+    confirmed = st.session_state.get("historical_confirmed_aoi")
+    confirmed_label = st.session_state.get("historical_aoi_label", "Confirmed map area")
     map_view = folium.Map(location=[9.4981, 76.3388], zoom_start=12, tiles="OpenStreetMap")
-    if draft_bounds:
+    if draft_bounds and not (
+        isinstance(confirmed, ConfirmedAOI) and tuple(draft_bounds) == confirmed.bounds
+    ):
         west, south, east, north = draft_bounds
         folium.Rectangle(
             bounds=[[south, west], [north, east]],
@@ -424,14 +430,14 @@ def _historical_map() -> None:
             fill_opacity=0.12,
             tooltip="Current draft AOI — confirm below",
         ).add_to(map_view)
-    confirmed = st.session_state.get("historical_confirmed_aoi")
     if isinstance(confirmed, ConfirmedAOI):
         folium.Rectangle(
             bounds=[[confirmed.south, confirmed.west], [confirmed.north, confirmed.east]],
             color="#15803d",
             weight=3,
             fill=False,
-            tooltip="Confirmed AOI",
+            tooltip=str(confirmed_label),
+            popup=str(confirmed_label),
         ).add_to(map_view)
     Draw(
         export=False,
@@ -491,6 +497,13 @@ def _show_historical_result(
     cache_columns[1].metric(
         "Selected windows loaded from cache", cache["selected_asset_windows_loaded_from_cache"]
     )
+    if cache["selected_asset_windows_retrieved"] == 0 and cache["selected_asset_windows_loaded_from_cache"]:
+        st.success("All selected observation windows came from the validated matching-AOI cache.")
+    elif cache["selected_asset_windows_retrieved"]:
+        st.info(
+            f"Retrieved {cache['selected_asset_windows_retrieved']} selected observation windows; "
+            f"loaded {cache['selected_asset_windows_loaded_from_cache']} from validated cache entries."
+        )
     st.caption("Cache matching is tied to the exact confirmed AOI; another area's cache is never substituted.")
 
     for observation in record["annual_observations"]:
@@ -639,6 +652,8 @@ def _show_historical_result(
 
 
 def _historical_mode() -> None:
+    st.session_state.setdefault("historical_manual_start_year", 2021)
+    st.session_state.setdefault("historical_manual_end_year", 2025)
     st.header("Historical vegetation analysis")
     st.write(
         "Draw and confirm a small rectangle, then request a bounded Sentinel-2 annual NDVI timeline. "
@@ -648,11 +663,25 @@ def _historical_mode() -> None:
         f"Demo AOI limit: {DEFAULT_AREA_LIMIT_SQUARE_KM:.0f} km². The app retrieves only small "
         "AOI raster windows and never applies the fine-resolution construction model to Sentinel-2."
     )
-    map_actions = st.columns(2)
-    if map_actions[0].button("Load documented Alappuzha demo rectangle"):
-        update_aoi_state(st.session_state, DEMO_BOUNDS)
+    st.markdown("### Demo preset")
+    if st.button("Load Alappuzha demo area", type="primary", width="stretch"):
+        activate_confirmed_aoi(
+            st.session_state,
+            DEMO_BOUNDS,
+            source="demo_preset",
+            label=DEMO_AOI_LABEL,
+        )
+        st.session_state["historical_manual_start_year"] = 2021
+        st.session_state["historical_manual_end_year"] = 2025
         st.rerun()
-    if map_actions[1].button("Reset boundary and result"):
+    st.caption(
+        "Loads and confirms the tested WGS84 bounds [76.34, 9.48, 76.36, 9.50] "
+        "through the same 25 km² AOI validator used for custom rectangles."
+    )
+
+    st.markdown("### Custom map selection")
+    st.caption("Draw a separate rectangle below, inspect its area, then confirm it explicitly.")
+    if st.button("Reset boundary and result"):
         update_aoi_state(st.session_state, None)
         st.rerun()
     _historical_map()
@@ -669,22 +698,22 @@ def _historical_mode() -> None:
         except HistoricalValidationError as exc:
             st.error(str(exc))
     if st.button("Confirm this boundary", disabled=draft_aoi is None, type="primary"):
-        st.session_state["historical_confirmed_aoi"] = draft_aoi
-        for key in (
-            "historical_request",
-            "historical_result",
-            "assistant_plan",
-            "assistant_execution",
-            "historical_answer",
-            "historical_chat",
-        ):
-            st.session_state.pop(key, None)
+        activate_confirmed_aoi(
+            st.session_state,
+            draft_aoi.bounds,
+            source="custom_map_selection",
+            label="Custom map area",
+        )
         st.success("Boundary confirmed. Request controls are now enabled.")
 
     confirmed = st.session_state.get("historical_confirmed_aoi")
     if isinstance(confirmed, ConfirmedAOI):
+        confirmed_label = st.session_state.get("historical_aoi_label", "Confirmed map area")
+        if confirmed_label == DEMO_AOI_LABEL:
+            st.info("Using the Alappuzha demo area")
         st.success(
-            f"Confirmed AOI: {confirmed.bounds}; approximately {confirmed.area_square_km:.3f} km²."
+            f"{confirmed_label}: {confirmed.bounds}; approximately "
+            f"{confirmed.area_square_km:.3f} km²."
         )
     else:
         st.warning("No area is confirmed. Drawing or loading a rectangle does not confirm it automatically.")
@@ -719,6 +748,8 @@ def _historical_mode() -> None:
                     provider,
                     prompt,
                     aoi_confirmed=isinstance(confirmed, ConfirmedAOI),
+                    active_boundary_label=st.session_state.get("historical_aoi_label"),
+                    active_boundary_source=st.session_state.get("historical_aoi_source"),
                 )
                 plan = build_tool_plan(
                     interpreted,
@@ -746,6 +777,8 @@ def _historical_mode() -> None:
     assistant_plan = st.session_state.get("assistant_plan")
     if isinstance(assistant_plan, ToolPlan):
         st.markdown("#### Validated interpretation and tool plan")
+        if assistant_plan.interpretation.boundary_label:
+            st.info(f"Using the {assistant_plan.interpretation.boundary_label}")
         st.json(assistant_plan.record())
         if assistant_plan.interpretation.missing_information:
             st.warning(
@@ -791,10 +824,18 @@ def _historical_mode() -> None:
     )
     current_year = datetime.now(timezone.utc).year
     start_year = int(control_columns[1].number_input(
-        "Start year", min_value=SUPPORTED_FIRST_YEAR, max_value=current_year, value=2021, step=1
+        "Start year",
+        min_value=SUPPORTED_FIRST_YEAR,
+        max_value=current_year,
+        step=1,
+        key="historical_manual_start_year",
     ))
     end_year = int(control_columns[2].number_input(
-        "End year", min_value=SUPPORTED_FIRST_YEAR, max_value=current_year, value=2025, step=1
+        "End year",
+        min_value=SUPPORTED_FIRST_YEAR,
+        max_value=current_year,
+        step=1,
+        key="historical_manual_end_year",
     ))
     analysis = "vegetation_ndvi" if analysis_label == "Vegetation NDVI timeline" else "construction"
     control_signature = (confirmed.cache_key, start_year, end_year, analysis)

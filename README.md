@@ -61,14 +61,15 @@ existing true-colour/NDVI comparison, provenance, common-valid coverage,
 persistent-vegetation statistics, threshold, warnings, and downloads.
 
 Historical vegetation mode starts with an unconfirmed map view over
-Alappuzha. Draw a rectangle, or load the documented demo rectangle, then
-explicitly confirm it before validating the request. Changing the rectangle or
-year controls invalidates the old request and result. The structured request
-supports two to five annual observations, defaults to 2021–2025, and rejects
-historical construction/road requests rather than applying the fine-resolution
-MCI model to Sentinel-2. Its chat field uses the local model only to extract a
-typed plan and choose from constrained, validated result statements. Analysis
-still starts only after an explicit Run action.
+Alappuzha. The prominent **Load Alappuzha demo area** button validates and
+confirms the documented preset immediately; custom rectangle drawing remains a
+separate explicitly confirmed path. Changing the rectangle or confirmed source
+invalidates the old plan and result. The structured request supports two to
+five annual observations, defaults to 2021–2025, and rejects historical
+construction/road requests rather than applying the fine-resolution MCI model
+to Sentinel-2. Its chat field uses the local model only to extract a typed plan
+and choose from constrained, validated result statements. Analysis still
+starts only after an explicit Run action.
 
 GeoLens writes every execution to a new ignored directory beneath
 `outputs/geolens/`. Uploaded images receive unique internal filenames; weights,
@@ -79,8 +80,11 @@ local upload limit is 10 MB per image.
 
 The documented rectangle is WGS84 bounds
 `[76.34, 9.48, 76.36, 9.50]`, approximately 4.878 km² and below the
-configurable 25 km² limit. A direct verification uses the same engine and
-defaults as the app:
+configurable 25 km² limit. The preset labels this rectangle “Alappuzha demo
+area,” displays it on the map, records `demo_preset` as its application-state
+source, and sets the manual year defaults to 2021–2025. It does not overwrite
+years explicitly extracted from a new question. A direct verification uses
+the same engine and defaults as the app:
 
 ```sh
 .venv/bin/python scripts/run_historical_demo.py
@@ -120,6 +124,12 @@ loaded all 20 selected band windows from cache and did not retrieve another
 AOI's data. Annual true-colour/NDVI PNGs, available difference PNGs, the
 deterministic summary and result JSON are downloadable in the app.
 
+Before reporting a cache hit, GeoLens now revalidates the exact search request,
+provider collection, observation IDs, asset/band URLs, AOI key, analysis grid,
+resampling, cached raster dtype/nodata and reflectance scale/offset. A mismatch
+uses the existing bounded retrieval path; if retrieval is unavailable, the
+mismatched cache is rejected rather than substituted.
+
 ## Local language-model interface
 
 The verified provider is local Ollama 0.32.5 with the already-installed
@@ -156,6 +166,13 @@ Extracted years are discarded unless the exact year token occurs in the
 question. The result is then passed through the existing AOI, date-range,
 five-observation and sensor-suitability validators. The model receives no
 coordinate field and cannot create or replace a confirmed AOI.
+
+When an AOI is already confirmed, a question such as `Compare vegetation from
+2021 to 2025` uses that AOI deterministically from application state; the word
+“here” is not required and no boundary quote is invented. The plan displays
+“Using the Alappuzha demo area” for the preset. An explicitly named conflicting
+place, such as Kochi while Alappuzha is active, is blocked until that different
+location is resolved and confirmed.
 
 The plan preserves unsupported construction/road intent and explains that
 aligned 256 × 256 RGB before/after inputs are required in Construction changes

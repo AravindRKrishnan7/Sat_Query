@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
+import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-import sys
 
 import numpy as np
 
@@ -169,6 +171,22 @@ class HistoricalCacheTests(unittest.TestCase):
         with self.assertRaises(HistoricalNetworkError):
             search_candidates(other_request, 2021, self.root, transport=failure, refresh=True)
 
+    def test_mismatched_search_cache_is_rejected(self) -> None:
+        def success(_url, _payload):
+            return {"features": [_item(2021)]}
+
+        search_candidates(self.request, 2021, self.root, transport=success)
+        path = self.root / self.request.aoi.cache_key / "search" / "2021.json"
+        cached = json.loads(path.read_text())
+        cached["request"]["bbox"] = [0, 0, 1, 1]
+        path.write_text(json.dumps(cached))
+
+        def failure(_url, _payload):
+            raise HistoricalNetworkError("offline")
+
+        with self.assertRaisesRegex(HistoricalNetworkError, "cache was rejected"):
+            search_candidates(self.request, 2021, self.root, transport=failure)
+
     def test_asset_network_failure_with_and_without_matching_cache(self) -> None:
         grid = build_analysis_grid(self.request.aoi)
         item = _item(2021)
@@ -213,6 +231,37 @@ class HistoricalCacheTests(unittest.TestCase):
                 self.root,
                 reader=failure,
                 refresh=True,
+            )
+
+    def test_other_aoi_asset_cache_cannot_be_silently_reused(self) -> None:
+        first_grid = build_analysis_grid(self.request.aoi)
+        item = _item(2021)
+        load_asset(
+            item,
+            "red",
+            first_grid,
+            self.request.aoi.cache_key,
+            self.root,
+            reader=_fake_asset_reader,
+        )
+        other_aoi = confirm_aoi((76.35, 9.48, 76.37, 9.50))
+        other_grid = build_analysis_grid(other_aoi)
+        source = self.root / self.request.aoi.cache_key / "assets" / item["id"]
+        target = self.root / other_aoi.cache_key / "assets" / item["id"]
+        target.parent.mkdir(parents=True)
+        shutil.copytree(source, target)
+
+        def failure(_item_value, _asset_key, _grid):
+            raise HistoricalNetworkError("offline")
+
+        with self.assertRaisesRegex(HistoricalNetworkError, "matching cache was rejected"):
+            load_asset(
+                item,
+                "red",
+                other_grid,
+                other_aoi.cache_key,
+                self.root,
+                reader=failure,
             )
 
 

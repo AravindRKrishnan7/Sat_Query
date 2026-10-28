@@ -16,11 +16,12 @@ from satquery.language import (  # noqa: E402
     discover_ollama,
     interpret_request,
 )
+from satquery.historical import DEMO_AOI_LABEL  # noqa: E402
 
 
 CASES = (
     (
-        "Compare vegetation here from 2021 to 2025.",
+        "Compare vegetation from 2021 to 2025.",
         {"analyses": ["vegetation"], "start_year": 2021, "end_year": 2025, "missing": []},
     ),
     (
@@ -40,6 +41,15 @@ CASES = (
             "missing": ["start_year", "end_year"],
         },
     ),
+    (
+        "Compare vegetation in Kochi from 2021 to 2025.",
+        {
+            "analyses": ["vegetation"],
+            "start_year": 2021,
+            "end_year": 2025,
+            "missing": ["named_location_confirmation"],
+        },
+    ),
 )
 
 
@@ -52,7 +62,13 @@ def main() -> int:
     outputs = []
     try:
         for text, expected in CASES:
-            interpreted = interpret_request(provider, text, aoi_confirmed=True)
+            interpreted = interpret_request(
+                provider,
+                text,
+                aoi_confirmed=True,
+                active_boundary_label=DEMO_AOI_LABEL,
+                active_boundary_source="demo_preset",
+            )
             actual = {
                 "analyses": list(interpreted.analyses),
                 "start_year": interpreted.start_year,

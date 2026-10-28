@@ -25,7 +25,7 @@ accepted as the default.
 The initial `qwen3:8b` missing-date test also invented a year range. GeoLens
 now requires exact source-text evidence for every asserted analysis and map
 reference, and accepts a year only if its exact token occurs in the original
-question. The strengthened four-case real compatibility run passed:
+question. The strengthened five-case real compatibility run passed:
 
 - vegetation here from 2021 to 2025 → vegetation only, correct years and
   boundary reference;
@@ -34,7 +34,9 @@ question. The strengthened four-case real compatibility run passed:
 - vegetation and construction → both intents preserved for a partial-support
   plan;
 - vegetation with no dates → start and end years reported as missing rather
-  than filled by the model.
+  than filled by the model;
+- Kochi while the Alappuzha preset is active → named-location confirmation
+  required rather than silently using either location.
 
 The model cannot receive or generate an AOI coordinate field. The application
 still requires an explicitly confirmed map boundary and applies the existing
@@ -78,11 +80,12 @@ Streamlit reruns do not execute the tool again.
 
 ### Language-interface verification and limitations
 
-- 42 lightweight tests pass. Nine language-interface tests cover unavailable
+- 48 lightweight tests pass. Thirteen language-interface tests cover unavailable
   service, missing/invented dates, unconfirmed AOI, unsupported construction
-  and roads, combined partial planning/execution, tool failure, missing
+  and roads, combined partial planning/execution, preset/application-state AOI
+  resolution, conflicting places, boundary invalidation, tool failure, missing
   numerical fact references and accepted deterministic fact rendering.
-- The real four-case `scripts/check_llm.py` compatibility test passed with
+- The real five-case `scripts/check_llm.py` compatibility test passed with
   `qwen3:8b`.
 - Streamlit's integration harness completed the real natural-language request,
   plan review, explicit tool execution, maps/charts, non-fallback answer and 14
@@ -93,6 +96,56 @@ Streamlit reruns do not execute the tool again.
 - Language-model interpretation remains fallible. Evidence and application
   validators limit its authority, and deterministic fallback remains the
   authoritative failure path.
+
+## Reproducible Alappuzha demo preset
+
+Historical mode now presents a prominent **Load Alappuzha demo area** action
+separately from custom rectangle drawing. It validates the tested WGS84 bounds
+`[76.34, 9.48, 76.36, 9.50]` through the same `confirm_aoi` contract as a
+custom selection, immediately makes it the active confirmed AOI, displays its
+4.878053 km² calculated area and labels the map rectangle “Alappuzha demo
+area.” It records `demo_preset` as the boundary source.
+
+Activating the preset clears any plan, execution, answer or historical result
+from another AOI and defaults the manual controls to 2021–2025. Years extracted
+from a new language request remain independent. Switching to a new draft custom
+rectangle clears the preset confirmation and all stale plan/result state.
+
+Confirmed-area context is now deterministic. With the preset active,
+`Compare vegetation from 2021 to 2025` creates a runnable plan without the word
+“here.” The interpretation record uses boundary source `demo_preset` from
+application state and supplies no invented boundary-text evidence. The UI and
+plan display “Using the Alappuzha demo area.” An explicitly named different
+location is recorded and blocked with `named_location_confirmation` until that
+place is resolved and confirmed.
+
+Cache-hit reporting was strengthened without changing retrieval or analysis.
+Search cache reads must match the exact bbox, year interval, collection,
+candidate limit and observation identities. Raster cache reads must match the
+observation ID, band/asset URL, collection, AOI key, target grid, resampling,
+dtype, nodata and item scale/offset. A mismatched cache is never used as a
+network fallback.
+
+### Real preset verification
+
+Assistant audit record:
+`outputs/geolens/assistant/assistant-20261028T165355469985Z-4662ff0ced/assistant.json`
+
+Historical execution record:
+`outputs/geolens/historical/run-20261028T165355641047Z-301be5429a/run.json`
+
+The Streamlit harness loaded the preset, confirmed the exact bounds and area,
+showed the label, retained manual defaults 2021–2025, interpreted the original
+question without “here,” displayed the application-state boundary in the plan
+and executed only after the explicit Run action. The result loaded all 20
+selected observation windows from validated matching-AOI caches and retrieved
+zero. It remained honestly partial based on the actual execution: 2021, 2023,
+2024 and 2025 were available and 2022 was unavailable. The supported final
+answer passed without fallback.
+
+This is a reproducible local demonstration preset, not a claim of production
+readiness or unrestricted geographic support. Custom rectangles remain
+available within the documented area, request and provider constraints.
 
 ## Historical GeoLens workflow
 
@@ -181,8 +234,8 @@ cause.
 
 ### Historical verification and limitations
 
-- 42 lightweight tests pass: the original construction and two-date
-  vegetation regressions, nine historical tests, and nine language-interface
+- 48 lightweight tests pass: the original construction and two-date
+  vegetation regressions, eleven historical tests, and thirteen language-interface
   tests. Historical coverage includes unconfirmed and oversized AOIs,
   stale-state invalidation, invalid dates/request size, unsupported
   construction, scaling representations, cache failure, missing-year
@@ -238,9 +291,9 @@ result-contract errors in user-facing language.
 
 - Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
   only in the project `.venv` and pinned in `requirements.in`.
-- All 42 lightweight tests pass. The six local-interface tests cover bounded
+- All 48 lightweight tests pass. The six local-interface tests cover bounded
   PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
-  and execution-record validation; nine historical and nine language tests
+  and execution-record validation; eleven historical and thirteen language tests
   cover the contracts listed above.
 - Streamlit's integration harness rendered all three modes without exceptions
   and ran the construction, two-date vegetation and cached historical

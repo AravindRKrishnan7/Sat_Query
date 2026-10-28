@@ -9,7 +9,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from satquery.historical import DEMO_BOUNDS, confirm_aoi  # noqa: E402
+from satquery.historical import (  # noqa: E402
+    DEMO_AOI_LABEL,
+    DEMO_BOUNDS,
+    activate_confirmed_aoi,
+    confirm_aoi,
+    update_aoi_state,
+)
 from satquery.language import (  # noqa: E402
     LanguageModelUnavailableError,
     OllamaProvider,
@@ -48,6 +54,7 @@ def interpretation_payload(
     start_year=2021,
     end_year=2025,
     boundary: bool = True,
+    named_location: str | None = None,
 ) -> dict:
     return {
         "vegetation_requested": vegetation,
@@ -60,6 +67,7 @@ def interpretation_payload(
         "end_year": end_year,
         "uses_confirmed_boundary": boundary,
         "boundary_evidence": "here" if boundary else None,
+        "named_location": named_location,
     }
 
 
@@ -110,6 +118,73 @@ class ProviderDiscoveryTests(unittest.TestCase):
 
 
 class InterpretationTests(unittest.TestCase):
+    def test_demo_preset_sets_validated_confirmed_boundary_and_invalidates_old_plan(self) -> None:
+        state = {
+            "historical_draft_bounds": (76.35, 9.48, 76.37, 9.50),
+            "historical_confirmed_aoi": confirm_aoi((76.35, 9.48, 76.37, 9.50)),
+            "historical_aoi_source": "custom_map_selection",
+            "historical_aoi_label": "Custom map area",
+            "assistant_plan": object(),
+            "historical_result": object(),
+        }
+        confirmed, changed = activate_confirmed_aoi(
+            state, DEMO_BOUNDS, "demo_preset", DEMO_AOI_LABEL
+        )
+        self.assertTrue(changed)
+        self.assertEqual(confirmed.bounds, DEMO_BOUNDS)
+        self.assertEqual(state["historical_confirmed_aoi"], confirmed)
+        self.assertEqual(state["historical_aoi_label"], DEMO_AOI_LABEL)
+        self.assertAlmostEqual(confirmed.area_square_km, 4.8780529, places=6)
+        self.assertNotIn("assistant_plan", state)
+        self.assertNotIn("historical_result", state)
+
+    def test_question_without_here_uses_active_demo_boundary(self) -> None:
+        provider = FakeProvider(interpretation_payload(vegetation=True, boundary=False))
+        interpreted = interpret_request(
+            provider,
+            "Compare vegetation from 2021 to 2025.",
+            aoi_confirmed=True,
+            active_boundary_label=DEMO_AOI_LABEL,
+            active_boundary_source="demo_preset",
+        )
+        self.assertEqual(interpreted.missing_information, ())
+        self.assertEqual(interpreted.boundary_source, "demo_preset")
+        self.assertIsNone(interpreted.evidence["confirmed_boundary"])
+        plan = build_tool_plan(interpreted, confirm_aoi(DEMO_BOUNDS), current_year=2026)
+        self.assertTrue(plan.runnable)
+        self.assertEqual(plan.record()["boundary_context"]["label"], DEMO_AOI_LABEL)
+
+    def test_switching_to_custom_aoi_invalidates_demo_plan(self) -> None:
+        state = {}
+        activate_confirmed_aoi(state, DEMO_BOUNDS, "demo_preset", DEMO_AOI_LABEL)
+        state["assistant_plan"] = object()
+        state["historical_result"] = object()
+        changed = update_aoi_state(state, (76.35, 9.48, 76.37, 9.50))
+        self.assertTrue(changed)
+        self.assertNotIn("historical_confirmed_aoi", state)
+        self.assertNotIn("assistant_plan", state)
+        self.assertNotIn("historical_result", state)
+
+    def test_conflicting_named_location_requires_confirmation(self) -> None:
+        provider = FakeProvider(
+            interpretation_payload(
+                vegetation=True,
+                boundary=False,
+                named_location="Kochi",
+            )
+        )
+        interpreted = interpret_request(
+            provider,
+            "Compare vegetation in Kochi from 2021 to 2025.",
+            aoi_confirmed=True,
+            active_boundary_label=DEMO_AOI_LABEL,
+            active_boundary_source="demo_preset",
+        )
+        self.assertIn("named_location_confirmation", interpreted.missing_information)
+        self.assertIsNone(interpreted.boundary_source)
+        plan = build_tool_plan(interpreted, confirm_aoi(DEMO_BOUNDS), current_year=2026)
+        self.assertFalse(plan.runnable)
+
     def test_missing_dates_are_clarifications_and_invented_years_are_discarded(self) -> None:
         provider = FakeProvider(
             interpretation_payload(vegetation=True, start_year=2020, end_year=2024)

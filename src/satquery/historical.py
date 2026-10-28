@@ -29,6 +29,7 @@ from satquery.vegetation import (
 EARTH_SEARCH_URL = "https://earth-search.aws.element84.com/v1"
 HISTORICAL_COLLECTION = "sentinel-2-c1-l2a"
 DEMO_BOUNDS = (76.34, 9.48, 76.36, 9.50)
+DEMO_AOI_LABEL = "Alappuzha demo area"
 DEFAULT_AREA_LIMIT_SQUARE_KM = 25.0
 DEFAULT_RESOLUTION_METRES = 10.0
 DEFAULT_CANDIDATE_LIMIT = 5
@@ -266,6 +267,8 @@ def update_aoi_state(state: MutableMapping[str, Any], bounds: Sequence[float] | 
         return False
     state["historical_draft_bounds"] = canonical
     state.pop("historical_confirmed_aoi", None)
+    state.pop("historical_aoi_source", None)
+    state.pop("historical_aoi_label", None)
     state.pop("historical_request", None)
     state.pop("historical_result", None)
     state.pop("assistant_plan", None)
@@ -273,6 +276,42 @@ def update_aoi_state(state: MutableMapping[str, Any], bounds: Sequence[float] | 
     state.pop("historical_answer", None)
     state.pop("historical_chat", None)
     return True
+
+
+def activate_confirmed_aoi(
+    state: MutableMapping[str, Any],
+    bounds: Sequence[float],
+    source: str,
+    label: str,
+) -> tuple[ConfirmedAOI, bool]:
+    """Validate and activate an AOI while invalidating results from another context."""
+    if not source.strip() or not label.strip():
+        raise HistoricalValidationError("confirmed AOI source and label must be non-empty")
+    confirmed = confirm_aoi(bounds)
+    previous = state.get("historical_confirmed_aoi")
+    unchanged = (
+        isinstance(previous, ConfirmedAOI)
+        and previous.bounds == confirmed.bounds
+        and state.get("historical_aoi_source") == source
+        and state.get("historical_aoi_label") == label
+    )
+    if unchanged:
+        return confirmed, False
+    state["historical_draft_bounds"] = confirmed.bounds
+    for key in (
+        "historical_confirmed_aoi",
+        "historical_request",
+        "historical_result",
+        "assistant_plan",
+        "assistant_execution",
+        "historical_answer",
+        "historical_chat",
+    ):
+        state.pop(key, None)
+    state["historical_confirmed_aoi"] = confirmed
+    state["historical_aoi_source"] = source
+    state["historical_aoi_label"] = label
+    return confirmed, True
 
 
 def build_request(
@@ -484,15 +523,38 @@ def search_candidates(
 ) -> tuple[list[dict[str, Any]], str]:
     start, end = request.seasonal_policy.interval(year)
     cache_path = cache_root / request.aoi.cache_key / "search" / f"{year}.json"
-    if cache_path.is_file() and not refresh:
-        value = json.loads(cache_path.read_text(encoding="utf-8"))
-        return list(value["features"]), "cache"
     payload = {
         "collections": [HISTORICAL_COLLECTION],
         "bbox": list(request.aoi.bounds),
         "datetime": f"{start}T00:00:00Z/{end}T23:59:59Z",
         "limit": 100,
     }
+    cached_features: list[dict[str, Any]] | None = None
+    cache_error: str | None = None
+    if cache_path.is_file():
+        try:
+            cached_value = json.loads(cache_path.read_text(encoding="utf-8"))
+            if not isinstance(cached_value, dict):
+                raise HistoricalValidationError("search cache is not a JSON object")
+            if cached_value.get("provider") != "Element 84 Earth Search":
+                raise HistoricalValidationError("search cache provider does not match")
+            if cached_value.get("collection") != HISTORICAL_COLLECTION:
+                raise HistoricalValidationError("search cache collection does not match")
+            if cached_value.get("request") != payload:
+                raise HistoricalValidationError("search cache AOI, year, or search settings do not match")
+            features = cached_value.get("features")
+            if not isinstance(features, list) or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("id"), str)
+                or item.get("collection") != HISTORICAL_COLLECTION
+                for item in features
+            ):
+                raise HistoricalValidationError("search cache contains invalid observation identities")
+            cached_features = list(features)
+        except (OSError, json.JSONDecodeError, HistoricalValidationError) as exc:
+            cache_error = str(exc)
+    if cached_features is not None and not refresh:
+        return cached_features, "cache"
     sender = transport or _post_json
     try:
         value = sender(f"{EARTH_SEARCH_URL}/search", payload)
@@ -509,9 +571,12 @@ def search_candidates(
         _atomic_json(cache_path, cache_value)
         return list(features), "retrieved"
     except Exception as exc:
-        if cache_path.is_file():
-            value = json.loads(cache_path.read_text(encoding="utf-8"))
-            return list(value["features"]), "cache_after_network_error"
+        if cached_features is not None:
+            return cached_features, "cache_after_network_error"
+        if cache_error:
+            raise HistoricalNetworkError(
+                f"Earth Search failed and the existing cache was rejected: {cache_error}: {exc}"
+            ) from exc
         if isinstance(exc, HistoricalNetworkError):
             raise
         raise HistoricalNetworkError(f"Earth Search search failed: {exc}") from exc
@@ -547,11 +612,81 @@ def _write_cached_raster(path: Path, values: np.ndarray, grid: AnalysisGrid, nod
     temporary.replace(path)
 
 
-def _read_cached_asset(path: Path, metadata_path: Path, asset_key: str) -> AssetData:
+def _read_cached_asset(
+    path: Path,
+    metadata_path: Path,
+    asset_key: str,
+    item: Mapping[str, Any],
+    grid: AnalysisGrid,
+    aoi_key: str,
+) -> AssetData:
     import rasterio
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    item_id = str(item.get("id") or "")
+    assets = item.get("assets")
+    asset = assets.get(asset_key) if isinstance(assets, Mapping) else None
+    expected_href = asset.get("href") if isinstance(asset, Mapping) else None
+    expected_resampling = "nearest-neighbour" if asset_key == "scl" else "bilinear"
+    if metadata.get("item_id") != item_id:
+        raise HistoricalValidationError("asset cache observation identity does not match")
+    if metadata.get("asset") != asset_key or not isinstance(expected_href, str):
+        raise HistoricalValidationError("asset cache band identity does not match")
+    if metadata.get("href") != expected_href:
+        raise HistoricalValidationError("asset cache source href does not match")
+    if metadata.get("collection") != HISTORICAL_COLLECTION:
+        raise HistoricalValidationError("asset cache collection does not match")
+    recorded_path = metadata.get("cache_path")
+    if not isinstance(recorded_path, str) or Path(recorded_path).resolve() != path.resolve():
+        raise HistoricalValidationError("asset cache path does not match its recorded AOI cache location")
+    if metadata.get("aoi_cache_key", aoi_key) != aoi_key:
+        raise HistoricalValidationError("asset cache AOI key does not match")
+    expected_mask_hash = hashlib.sha256(grid.aoi_mask.tobytes()).hexdigest()
+    if metadata.get("aoi_mask_sha256", expected_mask_hash) != expected_mask_hash:
+        raise HistoricalValidationError("asset cache AOI pixel mask does not match")
+    if metadata.get("target_grid") != grid.record():
+        raise HistoricalValidationError("asset cache analysis grid or processing settings do not match")
+    if metadata.get("resampling") != expected_resampling:
+        raise HistoricalValidationError("asset cache resampling setting does not match")
+    expected_processing = {
+        "resampling": expected_resampling,
+        "cache_dtype": "uint8" if asset_key == "scl" else "float32",
+    }
+    if "processing_settings" in metadata and metadata["processing_settings"] != expected_processing:
+        raise HistoricalValidationError("asset cache processing contract does not match")
+    if asset_key != "scl":
+        bands = asset.get("raster:bands") if isinstance(asset, Mapping) else None
+        band = bands[0] if isinstance(bands, list) and bands and isinstance(bands[0], Mapping) else None
+        if band is None or "scale" not in band or "offset" not in band:
+            raise HistoricalValidationError("current item asset lacks scale/offset metadata")
+        try:
+            cached_scale = float(metadata["applied_scale"])
+            cached_offset = float(metadata["applied_offset"])
+            current_scale = float(band["scale"])
+            current_offset = float(band["offset"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HistoricalValidationError("asset cache has invalid scale/offset metadata") from exc
+        if not math.isclose(
+            cached_scale, current_scale, rel_tol=0, abs_tol=1e-12
+        ) or not math.isclose(
+            cached_offset, current_offset, rel_tol=0, abs_tol=1e-12
+        ):
+            raise HistoricalValidationError("asset cache scale/offset does not match current item metadata")
     with rasterio.open(path) as dataset:
+        if (
+            dataset.count != 1
+            or dataset.width != grid.width
+            or dataset.height != grid.height
+            or dataset.crs != grid.crs
+            or dataset.transform != grid.transform
+        ):
+            raise HistoricalValidationError("asset cache raster grid does not match")
+        expected_dtype = "uint8" if asset_key == "scl" else "float32"
+        expected_nodata = 0.0 if asset_key == "scl" else FLOAT_NODATA
+        if dataset.dtypes[0] != expected_dtype or dataset.nodata is None or not math.isclose(
+            float(dataset.nodata), expected_nodata, rel_tol=0, abs_tol=1e-9
+        ):
+            raise HistoricalValidationError("asset cache dtype or nodata processing contract does not match")
         values = dataset.read(1).astype(np.float64 if asset_key != "scl" else np.uint8)
         if asset_key == "scl":
             valid = values != 0
@@ -702,14 +837,29 @@ def load_asset(
         raise HistoricalValidationError("STAC item has no ID")
     raster_path, metadata_path = _asset_cache_paths(cache_root, aoi_key, item_id, asset_key)
     if raster_path.is_file() and metadata_path.is_file() and not refresh:
-        return _read_cached_asset(raster_path, metadata_path, asset_key)
+        try:
+            return _read_cached_asset(
+                raster_path, metadata_path, asset_key, item, grid, aoi_key
+            )
+        except (OSError, json.JSONDecodeError, HistoricalValidationError):
+            pass
     remote_reader = reader or _read_remote_asset
     try:
         values, valid, record = remote_reader(item, asset_key, grid)
         record = {
             **record,
+            "item_id": item_id,
+            "asset": asset_key,
+            "href": item.get("assets", {}).get(asset_key, {}).get("href"),
             "collection": HISTORICAL_COLLECTION,
+            "aoi_cache_key": aoi_key,
+            "aoi_mask_sha256": hashlib.sha256(grid.aoi_mask.tobytes()).hexdigest(),
             "target_grid": grid.record(),
+            "resampling": "nearest-neighbour" if asset_key == "scl" else "bilinear",
+            "processing_settings": {
+                "resampling": "nearest-neighbour" if asset_key == "scl" else "bilinear",
+                "cache_dtype": "uint8" if asset_key == "scl" else "float32",
+            },
             "cache_path": str(raster_path.resolve()),
             "cached_at_utc": datetime.now(timezone.utc).isoformat(),
         }
@@ -723,9 +873,16 @@ def load_asset(
         raise
     except HistoricalNetworkError:
         if raster_path.is_file() and metadata_path.is_file():
-            cached = _read_cached_asset(raster_path, metadata_path, asset_key)
-            cached.cache_status = "cache_after_network_error"
-            return cached
+            try:
+                cached = _read_cached_asset(
+                    raster_path, metadata_path, asset_key, item, grid, aoi_key
+                )
+                cached.cache_status = "cache_after_network_error"
+                return cached
+            except (OSError, json.JSONDecodeError, HistoricalValidationError) as cache_exc:
+                raise HistoricalNetworkError(
+                    f"asset retrieval failed and matching cache was rejected: {cache_exc}"
+                ) from cache_exc
         raise
     except Exception as exc:
         raise HistoricalNetworkError(f"asset retrieval failed for {item_id}/{asset_key}: {exc}") from exc

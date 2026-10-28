@@ -28,7 +28,13 @@ DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3:8b"
 MAX_REQUEST_CHARACTERS = 2_000
 ANALYSES = ("vegetation", "construction", "roads")
-MISSING_FIELDS = ("analysis", "start_year", "end_year", "confirmed_boundary")
+MISSING_FIELDS = (
+    "analysis",
+    "start_year",
+    "end_year",
+    "confirmed_boundary",
+    "named_location_confirmation",
+)
 
 JsonTransport = Callable[[str, Mapping[str, Any] | None, float], dict[str, Any]]
 HistoricalRunner = Callable[[HistoricalRequest, Path, Path], dict[str, Any]]
@@ -78,6 +84,9 @@ class InterpretedRequest:
     start_year: int | None
     end_year: int | None
     uses_confirmed_boundary: bool
+    boundary_source: str | None
+    boundary_label: str | None
+    named_location: str | None
     missing_information: tuple[str, ...]
     evidence: Mapping[str, str | None]
     provider: str
@@ -95,6 +104,9 @@ class InterpretedRequest:
                 if self.uses_confirmed_boundary
                 else "missing_or_unspecified"
             ),
+            "boundary_source": self.boundary_source,
+            "boundary_label": self.boundary_label,
+            "named_location": self.named_location,
             "missing_information": list(self.missing_information),
             "evidence": dict(self.evidence),
             "provider": self.provider,
@@ -119,6 +131,10 @@ class ToolPlan:
         return {
             "status": self.status,
             "interpretation": self.interpretation.record(),
+            "boundary_context": {
+                "source": self.interpretation.boundary_source,
+                "label": self.interpretation.boundary_label,
+            },
             "tools": [dict(tool) for tool in self.tools],
             "validation_errors": list(self.validation_errors),
         }
@@ -282,6 +298,7 @@ INTERPRETATION_SCHEMA: dict[str, Any] = {
         "end_year": {"type": ["integer", "null"]},
         "uses_confirmed_boundary": {"type": "boolean"},
         "boundary_evidence": {"type": ["string", "null"]},
+        "named_location": {"type": ["string", "null"]},
     },
     "required": [
         "vegetation_requested",
@@ -294,6 +311,7 @@ INTERPRETATION_SCHEMA: dict[str, Any] = {
         "end_year",
         "uses_confirmed_boundary",
         "boundary_evidence",
+        "named_location",
     ],
 }
 
@@ -319,6 +337,7 @@ def _validate_interpretation_payload(value: Mapping[str, Any]) -> None:
         "construction_evidence",
         "roads_evidence",
         "boundary_evidence",
+        "named_location",
     ):
         if value[name] is not None and not isinstance(value[name], str):
             raise LanguageModelValidationError(f"interpretation field {name!r} is not a string or null")
@@ -328,6 +347,8 @@ def interpret_request(
     provider: OllamaProvider,
     original_request: str,
     aoi_confirmed: bool,
+    active_boundary_label: str | None = None,
+    active_boundary_source: str | None = None,
 ) -> InterpretedRequest:
     text = original_request.strip()
     if not text:
@@ -342,7 +363,9 @@ def interpret_request(
         "from vegetation. The words here, this area, selected area, current area, or map boundary "
         "mean uses_confirmed_boundary=true. For every true analysis and boundary boolean, return the "
         "shortest exact supporting quote from the user in its evidence field. Evidence must be null "
-        "when its boolean is false. Never invent years or coordinates. "
+        "when its boolean is false. named_location must be the shortest exact geographic place name "
+        "explicitly requested by the user, or null when no different/named place is written. Words "
+        "like here and this area are not named locations. Never invent years or coordinates. "
         "Examples: 'vegetation here from 2021 to 2025' means vegetation true, construction false, "
         "roads false. 'construction and roads here from 2020 to 2022' means vegetation false, "
         "construction true, roads true. Return only the required schema."
@@ -385,6 +408,14 @@ def interpret_request(
         if boundary_evidence is not None:
             raise LanguageModelValidationError("unspecified boundary supplied evidence")
         evidence["confirmed_boundary"] = None
+    named_location = value["named_location"]
+    if named_location is not None:
+        if not named_location.strip():
+            raise LanguageModelValidationError("named location is empty")
+        if named_location.strip().casefold() not in folded_text:
+            raise LanguageModelValidationError("named location is not present in the request")
+        named_location = named_location.strip()
+    evidence["named_location"] = named_location
     runtime_record = dict(runtime)
     discarded_years: list[int] = []
     start_year = value["start_year"]
@@ -396,6 +427,7 @@ def interpret_request(
         discarded_years.append(end_year)
         end_year = None
     runtime_record["discarded_years_without_source_evidence"] = discarded_years
+    runtime_record["model_uses_confirmed_boundary"] = value["uses_confirmed_boundary"]
     analyses = tuple(
         name
         for name, field in (
@@ -412,14 +444,29 @@ def interpret_request(
         missing.append("start_year")
     if end_year is None:
         missing.append("end_year")
-    if not value["uses_confirmed_boundary"] or not aoi_confirmed:
+    resolved_label = active_boundary_label or ("Confirmed map area" if aoi_confirmed else None)
+    resolved_source = active_boundary_source or ("application_state" if aoi_confirmed else None)
+    location_conflict = False
+    if named_location is not None and resolved_label is not None:
+        normalised_location = " ".join(re.findall(r"[a-z0-9]+", named_location.casefold()))
+        normalised_label = " ".join(re.findall(r"[a-z0-9]+", resolved_label.casefold()))
+        location_conflict = normalised_location not in normalised_label
+    elif named_location is not None:
+        location_conflict = True
+    boundary_resolved = aoi_confirmed and not location_conflict
+    if not aoi_confirmed:
         missing.append("confirmed_boundary")
+    elif location_conflict:
+        missing.append("named_location_confirmation")
     return InterpretedRequest(
         text,
         analyses,
         start_year,
         end_year,
-        value["uses_confirmed_boundary"],
+        boundary_resolved,
+        resolved_source if boundary_resolved else None,
+        resolved_label if boundary_resolved else None,
+        named_location,
         tuple(missing),
         evidence,
         provider.info.provider,
