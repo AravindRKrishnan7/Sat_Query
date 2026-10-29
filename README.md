@@ -1,13 +1,16 @@
 # SatQuery AI
 
-SatQuery AI is an early satellite change-analysis prototype with three local
-workflows over two independent analysis paths:
+SatQuery AI is an early satellite change-analysis prototype with exactly two
+user-facing GeoLens workflows over two independent analysis paths:
 
-- Change-Agent MCI inference on an already aligned RGB image pair.
-- Deterministic NDVI comparison of two prepared Sentinel-2 Level-2A
-  multispectral observations.
-- A bounded historical Sentinel-2 annual NDVI timeline for a user-confirmed
-  rectangle.
+- **Buildings and infrastructure:** Change-Agent MCI inference on an uploaded,
+  already aligned before/after RGB pair.
+- **Vegetation history:** a bounded historical Sentinel-2 annual NDVI timeline
+  for a user-confirmed rectangle.
+
+The corrected prepared two-date Sentinel-2 comparison remains implemented and
+covered by tests and command-line instructions, but it is no longer a separate
+main-selector workflow.
 
 The vegetation calculations remain deterministic numerical geospatial
 processing. A separate, constrained local language-model layer may interpret a
@@ -46,21 +49,28 @@ Open [http://127.0.0.1:8501](http://127.0.0.1:8501). The server binds only to
 the loopback interface. It does not download model or satellite assets on
 startup.
 
-The construction mode accepts bounded PNG/JPEG uploads. The model still
-receives only 256 × 256 RGB inputs. Optional resizing is explicit, produces a
-prepared-copy preview, and does not imply registration, alignment, suitable
-ground resolution, or restored detail. Analysis starts only after the user
-confirms that the pair depicts the same already aligned location and clicks
-the button. The verified model is cached in the Streamlit process after its
-first CPU load; completed execution records stay in session state across
-ordinary widget reruns.
+**Buildings and infrastructure** requires a natural-language question plus
+both a before and an after PNG/JPEG. Optional acquisition dates are accepted as
+user-supplied ISO dates and are never inferred from image pixels. A single
+image cannot run a comparison: the interface asks for the missing half. The
+model still receives only 256 × 256 RGB inputs. Optional resizing is explicit,
+produces a prepared-copy preview, and does not imply registration, alignment,
+suitable ground resolution, or restored detail. Analysis starts only after the
+user confirms that the pair depicts the same already aligned location and
+clicks **Analyse uploaded pair**.
 
-The vegetation mode intentionally accepts no RGB upload. “Run prepared
-example” calls the corrected real-example configuration and displays its
-existing true-colour/NDVI comparison, provenance, common-valid coverage,
-persistent-vegetation statistics, threshold, warnings, and downloads.
+The local language model extracts constrained building, road, general-change,
+count and location-question intent. GeoLens then renders checked prose from
+that intent and the recorded MCI mask classes. It does not let the language
+model invent objects or locations. MCI does not detect or temporally match
+building instances, so questions such as “How many new buildings?” receive an
+explicit unsupported-count explanation; connected mask components are never
+reported as buildings. Road-change pixels are not called new roads. The raw
+caption remains a separate model-head output and may disagree with the mask.
+Each run preserves the original MCI record plus `answer.md` and an assistant
+audit record.
 
-Historical vegetation is the default GeoLens mode. On its first session run it
+**Vegetation history** is the default GeoLens mode. On its first session run it
 activates the documented Alappuzha demo area through the same validator used
 for custom rectangles, shows the confirmed bounds and area, and keeps the map
 and chat as the primary interaction. Custom selection remains available in a
@@ -70,13 +80,16 @@ workflow supports two to five annual observations, defaults to 2021–2025, and
 rejects historical construction/road requests rather than applying the
 fine-resolution MCI model to Sentinel-2. Its chat field uses the local model
 only to extract a typed plan and choose from constrained, validated result
-statements. Analysis still starts only after an explicit Run action.
+statements. The main answer describes the direction of satellite-observed
+vegetation greenness in ordinary language without raw index values, pixel
+counts or threshold notation. Exact NDVI metrics, populations, coverage,
+thresholds and provenance remain under **View evidence and technical
+details**. Analysis still starts only after an explicit Run action.
 
-The sidebar retains all three workflows. **Construction changes** still needs
-an already aligned 256 × 256 RGB before/after pair. **Vegetation comparison**
-still runs the prepared multispectral example. They are manual alternatives
-with different input contracts, not automatic substitutes when a historical
-request is unavailable or unsupported.
+The sidebar contains only **Buildings and infrastructure** and **Vegetation
+history**. Their inputs and results are not moved between workflows. The
+prepared two-date NDVI runner remains available through the documented command
+line path below.
 
 GeoLens writes every execution to a new ignored directory beneath
 `outputs/geolens/`. Uploaded images receive unique internal filenames; weights,
@@ -194,10 +207,13 @@ export GEOLENS_OLLAMA_URL=http://127.0.0.1:11434
 export GEOLENS_OLLAMA_MODEL=qwen3:8b
 ```
 
-The compatibility command makes ten small structured-output calls covering
+The compatibility command makes thirteen small structured-output calls: ten
+vegetation-history cases covering
 infrastructure, buildings plus roads, vegetation greenness, vegetation cover,
 individual-tree counts, combined requests, omitted dates, and a conflicting
-named location. It does not run satellite retrieval. The app only probes
+named location, plus three uploaded-pair cases covering building/road intent,
+unsupported building counts and requested spatial descriptions. It does not
+run satellite retrieval or MCI inference. The app only probes
 Ollama's model list on startup; it loads the model after the user submits a
 question.
 
@@ -218,9 +234,9 @@ When an AOI is already confirmed, a question such as `Compare vegetation from
 place, such as Kochi while Alappuzha is active, is blocked until that different
 location is resolved and confirmed.
 
-The plan preserves unsupported construction/road intent and explains that
-aligned 256 × 256 RGB before/after inputs are required in Construction changes
-mode. A combined request can run the supported historical vegetation tool only
+The historical plan preserves unsupported construction/road intent and
+explains that aligned 256 × 256 RGB before/after inputs belong in **Buildings
+and infrastructure**. A combined request can run the supported historical vegetation tool only
 after the plan is reviewed and the user clicks **Run interpreted request**.
 GeoLens never executes model-generated code, shell commands or arbitrary tool
 names.

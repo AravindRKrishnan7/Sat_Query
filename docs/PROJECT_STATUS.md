@@ -2,11 +2,83 @@
 
 Status verified on 2026-10-29. The working implementation has two independent
 analysis paths: Change-Agent RGB inference and deterministic Sentinel-2
-Level-2A NDVI processing. GeoLens exposes construction, corrected two-date
-vegetation, and bounded historical vegetation workflows. Neither NDVI workflow
-uses an AI model for its calculations. A separate local language-model layer
-now interprets requests and selects validated result statements without
-changing either analysis path.
+Level-2A NDVI processing. GeoLens now exposes exactly two user-facing
+workflows: **Buildings and infrastructure** and **Vegetation history**. The
+corrected prepared two-date vegetation runner remains implemented and tested,
+but is no longer a separate main-selector choice. Neither NDVI workflow uses an
+AI model for its calculations. A separate local language-model layer interprets
+requests and selects validated result statements without changing either
+analysis path.
+
+## Two-workflow GeoLens delivery
+
+### Buildings and infrastructure
+
+The uploaded-image workflow now requires a natural-language question, a before
+image, an after image and the existing explicit same-location/alignment
+confirmation. Acquisition dates are optional user-supplied ISO values; the app
+does not infer them. Supplying only one image produces a direct request for the
+missing image and cannot start inference.
+
+Local `qwen3:8b` extracts a constrained question contract for building change,
+road change, general image change, instance-count requests and requested
+spatial descriptions. Exact source-text evidence is required for every true
+field. The application—not the language model—then renders the answer from
+that validated intent and the recorded MCI mask classes. It never derives
+building counts from connected components, never calls every road-change pixel
+a newly constructed road, and never turns the separate raw caption into a mask
+fact. The before/after views and overlay are prominent; the class mask, raw
+caption, predicted pixel fractions, model record and assistant audit are in
+**View evidence and technical details**.
+
+The real Streamlit integration-harness run used the pinned 256 × 256 pair and
+the verified CPU checkpoint. The mask contained 6,509 predicted
+building-change pixels, zero road-change pixels and 59,027 background pixels;
+the raw caption was `some houses are built along the road`. The checked answer
+therefore reported predicted building-change areas and no road-change pixels,
+while explicitly warning that the separate caption may disagree. The new mask,
+legend and overlay are byte-for-byte equal to the established
+`outputs/change-agent-cpu` baseline for this pair.
+
+- MCI record:
+  `outputs/geolens/construction/run-20261029T034910221606Z-6d10dba04f/run.json`
+- Assistant record:
+  `outputs/geolens/construction/run-20261029T034910221606Z-6d10dba04f/assistant.json`
+
+### Vegetation history
+
+The Alappuzha preset, custom map, validated plan, explicit Run action,
+exact-AOI cache and corrected NDVI processing are unchanged. The main answer
+now expresses only supported direction and mixed spatial behaviour in ordinary
+greenness language. It contains no raw NDVI values, pixel counts, coverage
+percentages or threshold notation. It does not use undocumented “slight” or
+“large” severity labels. Exact values, populations, coverage, thresholds,
+provenance, cache details and records remain downloadable in the evidence
+expander.
+
+The real cached Streamlit run again accepted 2021, 2023, 2024 and 2025, kept
+2022 unavailable, loaded all 20 selected windows from the exact-AOI cache and
+retrieved none. The constrained claim plan passed without fallback. Numerical
+request, observation, pairwise, grid and limitation records match the corrected
+baseline; the common-valid mask GeoTIFF is byte-for-byte identical. Only unique
+output paths and the intentionally revised prose differ.
+
+- Historical record:
+  `outputs/geolens/historical/run-20261029T034940021165Z-a5697dcee0/run.json`
+- Assistant record:
+  `outputs/geolens/assistant/assistant-20261029T034939746378Z-23a8ea0af2/assistant.json`
+
+### Verification
+
+- All 73 lightweight regression tests pass, including eight focused uploaded-
+  infrastructure tests and the preserved MCI, prepared two-date vegetation,
+  historical cache/scaling and language-answer suites.
+- The expanded real `ollama/qwen3:8b` compatibility command passes all 13
+  structured cases: ten vegetation-history cases and three uploaded-pair cases.
+- Streamlit's integration harness completed both real workflows, verified
+  one-image clarification, downloads, expandable evidence and result
+  persistence across ordinary reruns. No browser was connected to the browser
+  control surface, so visible browser interaction is not claimed.
 
 ## Infrastructure demo feasibility and typed observations
 
@@ -112,10 +184,10 @@ Primary references: [Maxar Open Data on AWS](https://registry.opendata.aws/maxar
 
 ### Implemented and verified
 
-- All three sidebar workflows remain available, with **Historical vegetation**
-  selected by default. Construction changes and the prepared two-date
-  vegetation comparison retain their existing input contracts and are never
-  substituted automatically.
+- The sidebar now contains exactly **Buildings and infrastructure** and
+  **Vegetation history**, with Vegetation history selected by default. The
+  prepared two-date vegetation implementation and tests remain intact outside
+  the main selector.
 - A new historical session activates the Alappuzha demo bounds through
   `confirm_aoi`, displays the 4.878053 km² active area, and keeps the map and
   chat ahead of the fallback controls. An unchanged rerun preserves that
@@ -125,7 +197,7 @@ Primary references: [Maxar Open Data on AWS](https://registry.opendata.aws/maxar
   request is now in a fallback expander. The readable checked answer remains
   above images and charts; raw plans, pixel populations, provider details and
   machine records remain expandable and downloadable.
-- The full lightweight suite passes 65 tests. Three Streamlit interface tests
+- The full lightweight suite passes 73 tests. Three Streamlit interface tests
   verify workflow availability/default selection, one-time demo confirmation,
   unchanged reruns, and reset invalidation. Existing tests continue to cover
   changed-boundary invalidation, combined intent, missing years, unsupported
@@ -140,9 +212,9 @@ pixels (76.8277%). The constrained claim plan passed without fallback and the
 app rendered 15 downloads with no exception.
 
 - Assistant record:
-  `outputs/geolens/assistant/assistant-20261029T010841259934Z-788b4f4c30/assistant.json`
+  `outputs/geolens/assistant/assistant-20261029T034939746378Z-23a8ea0af2/assistant.json`
 - Historical record:
-  `outputs/geolens/historical/run-20261029T010841399635Z-b24a40ecc3/run.json`
+  `outputs/geolens/historical/run-20261029T034940021165Z-a5697dcee0/run.json`
 
 ### Investigated but unverified
 
@@ -215,10 +287,11 @@ accepted as the default.
 The initial `qwen3:8b` missing-date test also invented a year range. GeoLens
 now requires exact source-text evidence for every asserted analysis and map
 reference, and accepts a year only if its exact token occurs in the original
-question. The strengthened ten-case real compatibility run passed. In addition
-to the original cases, it now verifies infrastructure, buildings and roads,
-combined vegetation plus infrastructure, vegetation cover, and individual-tree
-count intent:
+question. The strengthened 13-case real compatibility run passed. Ten cases
+cover the historical/map contract, including infrastructure, buildings and
+roads, combined vegetation plus infrastructure, vegetation cover and
+individual-tree-count intent. Three more cover uploaded-pair building/road,
+count and spatial-description questions:
 
 - vegetation here from 2021 to 2025 → vegetation only, correct years and
   boundary reference;
@@ -235,7 +308,7 @@ The model cannot receive or generate an AOI coordinate field. The application
 still requires an explicitly confirmed map boundary and applies the existing
 year, request-size, seasonal, quality, cache and sensor validators. Unsupported
 construction/road intent is retained in the plan with the exact requirement
-for aligned 256 × 256 RGB inputs in Construction changes mode. The model can
+for aligned 256 × 256 RGB inputs in Buildings and infrastructure. The model can
 invoke no Python, shell command or arbitrary tool: only the predefined
 historical vegetation wrapper can reach `run_historical`, and only after the
 user reviews the plan and clicks Run.
@@ -263,9 +336,9 @@ partial: 2022 was missing, while 2021, 2023, 2024 and 2025 were available. The
 model returned all six required fact IDs with
 `partial_historical_ndvi_comparison` and
 `missing_years_limit_comparison`; answer validation passed without fallback.
-The displayed answer used the actual dates, 76.83% all-observation
-common-valid coverage, the fixed-population annual NDVI means, 84.23%
-first/last pair coverage and the documented population distinction.
+The displayed answer used the actual dates and documented population
+distinction while leaving raw values, coverage and pixel populations in the
+technical evidence section.
 
 The audit record contains the original question, provider/model identifier,
 exact evidence, validated interpretation, selected tool and arguments,
@@ -275,12 +348,12 @@ Streamlit reruns do not execute the tool again.
 
 ### Language-interface verification and limitations
 
-- 65 lightweight tests pass. Twenty-seven language-interface tests cover unavailable
+- 73 lightweight tests pass. Twenty-seven historical language-interface tests cover unavailable
   service, missing/invented dates, unconfirmed AOI, unsupported construction
   and roads, combined partial planning/execution, preset/application-state AOI
   resolution, conflicting places, boundary invalidation, tool failure, missing
   numerical fact references and accepted deterministic fact rendering.
-- The real ten-case `scripts/check_llm.py` compatibility test passed with
+- The real 13-case `scripts/check_llm.py` compatibility test passed with
   `qwen3:8b`.
 - Streamlit's integration harness completed the real natural-language request,
   plan review, explicit tool execution, maps/charts, non-fallback answer and 14
@@ -509,9 +582,10 @@ cause.
 
 ### Historical verification and limitations
 
-- 65 lightweight tests pass: the original construction and two-date
-  vegetation regressions, eleven historical tests, and twenty-seven language-interface
-  tests, plus three focused Streamlit layout/state tests. Historical coverage includes unconfirmed and oversized AOIs,
+- 73 lightweight tests pass: the original construction and two-date
+  vegetation regressions, eleven historical tests, twenty-seven historical
+  language-interface tests, eight uploaded-infrastructure tests and three
+  focused Streamlit layout/state tests. Historical coverage includes unconfirmed and oversized AOIs,
   stale-state invalidation, invalid dates/request size, unsupported
   construction, scaling representations, cache failure, missing-year
   adjacency, and insufficient common coverage.
@@ -530,15 +604,18 @@ cause.
 
 ## Local GeoLens interface
 
-GeoLens is now a local Streamlit interface over the construction, corrected
-two-date vegetation, and historical vegetation execution functions. It leaves
-the `satquery` package and repository name unchanged. It adds a constrained
-local Ollama interface but no agent framework, authentication, database,
-cloud-model dependency, or deployment.
+GeoLens now presents exactly two main workflows while preserving the existing
+construction, corrected two-date vegetation and historical execution
+functions. It leaves the `satquery` package and repository name unchanged and
+adds no agent framework, authentication, database, cloud-model dependency or
+deployment.
 
-Construction mode:
+Buildings and infrastructure:
 
+- requires a natural-language question and both images;
 - accepts PNG/JPEG uploads up to 10 MB under unique internal filenames;
+- accepts optional user-supplied dates without treating them as image-derived
+  metadata;
 - requires an explicit same-location/already-aligned confirmation;
 - accepts the model's native 256 × 256 RGB contract, or optionally creates and
   previews explicit Lanczos-resized copies with a warning that resizing does
@@ -546,16 +623,14 @@ Construction mode:
 - calls the existing Change-Agent CPU runner only on the Analyse button;
 - caches the verified model load in the Streamlit process and retains the
   latest execution record in session state;
-- displays the prepared pair, coloured class mask, overlay, raw unedited
-  caption, predicted pixel fractions, warnings, downloads, and expandable
-  technical metadata.
+- displays checked prose, prepared images and overlay first, with the class
+  mask, raw unedited caption, predicted pixel fractions, downloads and records
+  in expandable evidence.
 
-Vegetation mode has one “Run prepared example” action. It accepts no ordinary
-RGB upload and calls the existing corrected real-example runner with a separate
-`outputs/geolens/vegetation` root. It displays the existing comparison PNG,
-dates, provenance, legends, common-valid coverage, threshold, and statistics
-for pixels classified SCL 4 vegetation on both dates. Display stretching and
-reflectance/NDVI calculations remain separate.
+Vegetation history retains the map/chat and corrected annual NDVI path. Its
+main prose omits dense metrics while exact values remain in expandable
+evidence. The prepared two-date runner remains implemented, tested and
+available through its command-line entry point, but is not a third main choice.
 
 Every GeoLens execution uses a new directory beneath the ignored
 `outputs/geolens/` tree. The app performs no asset download at startup and
@@ -566,14 +641,16 @@ result-contract errors in user-facing language.
 
 - Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
   only in the project `.venv` and pinned in `requirements.in`.
-- All 65 lightweight tests pass. The nine local-interface tests cover workflow
+- All 73 lightweight tests pass. The local-interface tests cover workflow
   selection/default state, one-time demo confirmation and reset invalidation, plus bounded
   PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
-  and execution-record validation; eleven historical and twenty-seven language tests
-  cover the contracts listed above.
-- Streamlit's integration harness rendered all three modes without exceptions
-  and ran the construction, two-date vegetation and cached historical
-  workflows against real local assets, not mocks.
+  and execution-record validation; eleven historical, twenty-seven historical
+  language and eight uploaded-infrastructure tests cover the contracts listed
+  above.
+- Streamlit's integration harness rendered both main workflows without
+  exceptions and ran real MCI and exact-AOI cached historical analysis, not
+  mocks. The prepared two-date analysis remains covered by its existing
+  regression and real-output checks.
 - Construction used the current 1254 × 1254 repository sample through the
   explicit resize path and the real verified CPU checkpoint. Its execution at
   `outputs/geolens/construction/run-20261028T125540054743Z-54d42679ec`
