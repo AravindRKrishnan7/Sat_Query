@@ -154,10 +154,11 @@ export GEOLENS_OLLAMA_URL=http://127.0.0.1:11434
 export GEOLENS_OLLAMA_MODEL=qwen3:8b
 ```
 
-The compatibility command makes four small structured-output calls covering
-vegetation, construction plus roads, a combined request, and omitted dates. It
-does not run satellite retrieval. The app only probes Ollama's model list on
-startup; it loads the model after the user submits a question.
+The compatibility command makes five small structured-output calls covering
+vegetation, construction plus roads, a combined request, omitted dates, and a
+conflicting named location. It does not run satellite retrieval. The app only
+probes Ollama's model list on startup; it loads the model after the user
+submits a question.
 
 Interpretation uses a JSON schema with separate vegetation, construction and
 road intents, years, and a reference to the current boundary. Every asserted
@@ -181,19 +182,35 @@ after the plan is reviewed and the user clicks **Run interpreted request**.
 GeoLens never executes model-generated code, shell commands or arbitrary tool
 names.
 
-For the final answer, the model receives a compact result containing actual
-dates, missing years, coverage, metrics, pixel populations, limitations and
-output references. It may return only schema-constrained statement codes and
-validated fact IDs. All displayed numbers are inserted from the execution
-record; missing or invented fact IDs reject the response. A visibly labelled
-deterministic summary is used if the model call or validation fails.
+For the final answer, the model receives a compact result containing requested
+and available years, actual dates, missing observations, common-pixel metrics,
+pair-valid comparisons, thresholds, unsupported analyses and tool failures.
+The model does not write unrestricted prose: it selects a schema-constrained
+answer kind, lead claim and complete set of allowed claim identifiers. GeoLens
+then renders short conversational paragraphs from checked dates, intervals,
+metric identities and pixel populations in the execution record.
+
+This separation prevents an invented number, date, comparison interval or
+unsupported conclusion from entering the displayed answer. Validation checks
+the claim set and conclusion type as well as the numerical source values; it
+does not claim that number checking alone verifies arbitrary prose. If the
+model service or claim plan fails validation, GeoLens renders the same readable
+evidence-backed explanation deterministically and records the rejection reason
+in technical details.
+
+The conversational answer appears before the imagery and charts and is saved
+as a downloadable `answer.md`. Maps and satellite previews remain directly
+visible. Raw plans, per-year metrics, pairwise records, provider details,
+timings and machine-readable JSON are placed in expandable **View evidence and
+technical details** sections. Ordinary Streamlit reruns reuse the answer kept
+in session state rather than regenerating it.
 
 Each interpreted execution writes an ignored
 `outputs/geolens/assistant/assistant-*/assistant.json` audit record containing
 the original question, provider/model, evidence-backed interpretation,
-validated tool arguments, execution status, result references/errors and final
-answer validation metadata. Changing the question or AOI invalidates the old
-plan and result.
+validated tool arguments, execution status, result references/errors, final
+answer validation metadata and the `answer.md` path. Changing the question or
+AOI invalidates the old plan and result.
 
 ## Current status
 

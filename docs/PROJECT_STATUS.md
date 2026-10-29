@@ -1,6 +1,6 @@
 # Project status
 
-Status verified on 2026-10-28. The working implementation has two independent
+Status verified on 2026-10-29. The working implementation has two independent
 analysis paths: Change-Agent RGB inference and deterministic Sentinel-2
 Level-2A NDVI processing. GeoLens exposes construction, corrected two-date
 vegetation, and bounded historical vegetation workflows. Neither NDVI workflow
@@ -47,12 +47,14 @@ invoke no Python, shell command or arbitrary tool: only the predefined
 historical vegetation wrapper can reach `run_historical`, and only after the
 user reviews the plan and clicks Run.
 
-Final-answer generation receives a compact copy of actual dates, missing
-years, coverage, metrics, pixel populations, limitations and output
-references. The model returns only schema-constrained statement codes and all
-required fact IDs. Dates and numerical claims are rendered from the tool
-record, not model prose. Missing/invented fact IDs or an inconsistent
-conclusion triggers a visibly labelled deterministic fallback.
+Final-answer generation receives a compact copy of requested/available years,
+actual dates, missing observations, common-pixel metrics, pair-valid
+comparisons, thresholds, limitations, unsupported analyses and tool failures.
+The model does not write unrestricted prose. It selects a schema-constrained
+answer kind, lead claim and complete claim-ID set; the application renders
+evidence-backed prose from the execution record. An invented claim ID, extra
+number/date field, wrong conclusion or missing claim triggers a readable
+deterministic fallback.
 
 ### Real end-to-end language-model verification
 
@@ -80,7 +82,7 @@ Streamlit reruns do not execute the tool again.
 
 ### Language-interface verification and limitations
 
-- 50 lightweight tests pass. Fifteen language-interface tests cover unavailable
+- 57 lightweight tests pass. Twenty-two language-interface tests cover unavailable
   service, missing/invented dates, unconfirmed AOI, unsupported construction
   and roads, combined partial planning/execution, preset/application-state AOI
   resolution, conflicting places, boundary invalidation, tool failure, missing
@@ -125,6 +127,55 @@ years 2022–2024 and displayed the explicit Run action. Separate real
 interaction tests kept an unconfirmed AOI blocked by `confirmed_boundary` and
 kept Kochi blocked by `named_location_confirmation`. Re-confirming even the
 same area now clears any stale blocked plan and chat state.
+
+## Conversational evidence-backed answers
+
+Historical results now lead with a short GeoLens answer that explains NDVI on
+first use as a satellite-based indicator related to vegetation greenness,
+names the actual acquisition dates, describes only available adjacent
+comparisons, explains missing years naturally and ends with one relevant
+limitation. The renderer explicitly distinguishes the all-observation
+common-pixel population from each pair-valid population. A small mean
+difference is shown alongside the local increase/decrease/stable fractions and
+is not generalized into a claim that the whole area was stable.
+
+The local `qwen3:8b` model selects only a constrained claim plan. GeoLens—not
+the model—renders dates, numbers, intervals and prose from checked structured
+results. Validation therefore covers conclusion type, claim identity,
+comparison interval and population identity in addition to numerical source
+values. It does not claim to validate arbitrary language merely by checking
+numbers. Missing observations are not bridged, spatial findings are never
+invented, and unsupported construction/road analyses or tool failures receive
+separate no-finding statements.
+
+The answer is prominent above the existing imagery and charts. Raw plans,
+per-year metrics, pairwise records, provider timings and result JSON are in
+expandable evidence sections. `answer.md` is downloadable, while the full
+assistant JSON retains the claim plan, model runtime, fallback flag and
+rejection reason. Session state prevents regeneration on unrelated reruns.
+
+### Real conversational-answer verification
+
+Assistant audit record:
+`outputs/geolens/assistant/assistant-20261029T004414533960Z-517476cfa3/assistant.json`
+
+Answer file:
+`outputs/geolens/assistant/assistant-20261029T004414533960Z-517476cfa3/answer.md`
+
+Historical execution record:
+`outputs/geolens/historical/run-20261029T004414731762Z-bffd12a90c/run.json`
+
+The real cached Alappuzha Streamlit flow used all 20 matching cached band
+windows and retrieved zero. `qwen3:8b` returned the complete constrained claim
+plan without fallback. The rendered answer used the actual 2021, 2023, 2024
+and 2025 dates; identified 2022 as unavailable; withheld the two adjacent
+intervals touching 2022; described the supported 2023→2024 and 2024→2025
+pair-valid comparisons; and kept the 2021→2025 endpoint population separate
+from the 37,316-pixel all-observation population. Streamlit's interaction
+harness rendered the answer, imagery, charts, evidence expanders and 15
+downloads without exceptions, including **Download this answer**. No browser
+was connected to the browser-control surface, so visible browser interaction
+is not claimed.
 
 ## Reproducible Alappuzha demo preset
 
@@ -263,8 +314,8 @@ cause.
 
 ### Historical verification and limitations
 
-- 50 lightweight tests pass: the original construction and two-date
-  vegetation regressions, eleven historical tests, and fifteen language-interface
+- 57 lightweight tests pass: the original construction and two-date
+  vegetation regressions, eleven historical tests, and twenty-two language-interface
   tests. Historical coverage includes unconfirmed and oversized AOIs,
   stale-state invalidation, invalid dates/request size, unsupported
   construction, scaling representations, cache failure, missing-year
@@ -320,9 +371,9 @@ result-contract errors in user-facing language.
 
 - Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
   only in the project `.venv` and pinned in `requirements.in`.
-- All 50 lightweight tests pass. The six local-interface tests cover bounded
+- All 57 lightweight tests pass. The six local-interface tests cover bounded
   PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
-  and execution-record validation; eleven historical and fifteen language tests
+  and execution-record validation; eleven historical and twenty-two language tests
   cover the contracts listed above.
 - Streamlit's integration harness rendered all three modes without exceptions
   and ran the construction, two-date vegetation and cached historical

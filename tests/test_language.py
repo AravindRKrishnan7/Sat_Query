@@ -20,6 +20,7 @@ from satquery.language import (  # noqa: E402
     LanguageModelUnavailableError,
     OllamaProvider,
     ProviderInfo,
+    attach_final_answer,
     build_tool_plan,
     discover_ollama,
     execute_tool_plan,
@@ -76,6 +77,7 @@ def result_fixture() -> dict:
         "request": {
             "years": [2021, 2022],
             "aoi": {"bounds_wgs84": list(DEMO_BOUNDS), "area_square_km": 4.878},
+            "data_quality_requirements": {"change_threshold": 0.1},
         },
         "annual_observations": [
             {
@@ -104,6 +106,100 @@ def result_fixture() -> dict:
         "first_to_last_difference": {"status": "unavailable"},
         "limitations": ["NDVI does not establish cause."],
         "outputs": {"summary": "/tmp/summary.txt", "execution_record": "/tmp/run.json"},
+    }
+
+
+def complete_result_fixture() -> dict:
+    categories = {
+        "increased": {"pixels": 20, "fraction": 0.2},
+        "decreased": {"pixels": 15, "fraction": 0.15},
+        "approximately_stable": {"pixels": 65, "fraction": 0.65},
+    }
+    observations = [
+        {
+            "year": year,
+            "status": "available",
+            "acquisition_date": date,
+            "valid_coverage": 0.9,
+            "per_year_population": "pixels valid for this observation",
+            "per_year_ndvi": {"mean": mean, "median": mean},
+        }
+        for year, date, mean in (
+            (2021, "2021-02-07", 0.40),
+            (2022, "2022-02-12", 0.43),
+            (2023, "2023-01-08", 0.42),
+        )
+    ]
+    adjacent = []
+    for before, after, before_date, after_date, mean in (
+        (2021, 2022, "2021-02-07", "2022-02-12", 0.03),
+        (2022, 2023, "2022-02-12", "2023-01-08", -0.01),
+    ):
+        adjacent.append({
+            "label": f"{before}-to-{after}",
+            "status": "available",
+            "before_year": before,
+            "after_year": after,
+            "before_date": before_date,
+            "after_date": after_date,
+            "valid_pixels": 100,
+            "aoi_pixels": 120,
+            "valid_coverage": 100 / 120,
+            "threshold": 0.1,
+            "categories": categories,
+            "mean": mean,
+        })
+    return {
+        "request": {
+            "years": [2021, 2022, 2023],
+            "aoi": {"bounds_wgs84": list(DEMO_BOUNDS), "area_square_km": 4.878},
+            "data_quality_requirements": {"change_threshold": 0.1},
+        },
+        "annual_observations": observations,
+        "available_years": [2021, 2022, 2023],
+        "missing_years": [],
+        "common_valid_trend": {
+            "sufficient": True,
+            "coverage": 0.8,
+            "pixels": 96,
+            "aoi_pixels": 120,
+            "population": "pixels valid across every available observation",
+            "reason": None,
+            "annual_statistics": [
+                {
+                    "year": item["year"],
+                    "acquisition_date": item["acquisition_date"],
+                    "mean": item["per_year_ndvi"]["mean"],
+                    "median": item["per_year_ndvi"]["median"],
+                }
+                for item in observations
+            ],
+        },
+        "adjacent_differences": adjacent,
+        "first_to_last_difference": {
+            "status": "available",
+            "before_year": 2021,
+            "after_year": 2023,
+            "before_date": "2021-02-07",
+            "after_date": "2023-01-08",
+            "valid_pixels": 98,
+            "aoi_pixels": 120,
+            "valid_coverage": 98 / 120,
+            "threshold": 0.1,
+            "categories": categories,
+            "mean": 0.02,
+        },
+        "limitations": ["NDVI does not establish cause."],
+        "outputs": {"summary": "/tmp/summary.txt", "execution_record": "/tmp/run.json"},
+    }
+
+
+def valid_answer_plan(schema: dict) -> dict:
+    properties = schema["properties"]
+    return {
+        "answer_kind": properties["answer_kind"]["enum"][0],
+        "lead_claim_id": properties["lead_claim_id"]["enum"][0],
+        "claim_ids": list(properties["claim_ids"]["items"]["enum"]),
     }
 
 
@@ -334,36 +430,123 @@ class ToolExecutionTests(unittest.TestCase):
 
 
 class SupportedAnswerTests(unittest.TestCase):
-    def test_missing_numerical_fact_reference_uses_deterministic_fallback(self) -> None:
-        result = result_fixture()
-
-        def response(schema):
-            ids = list(schema["properties"]["fact_ids"]["items"]["enum"])
-            return {
-                "headline_code": "insufficient_comparable_coverage",
-                "fact_ids": ids[:-1],
-                "interpretation_code": "insufficient_common_coverage",
-            }
-
-        answer = generate_supported_answer(FakeProvider(responder=response), result)
-        self.assertTrue(answer["fallback_used"])
-        self.assertIn("fact ID", answer["fallback_reason"])
-
-    def test_valid_answer_uses_only_deterministic_fact_values(self) -> None:
-        result = result_fixture()
-
-        def response(schema):
-            ids = list(schema["properties"]["fact_ids"]["items"]["enum"])
-            return {
-                "headline_code": "insufficient_comparable_coverage",
-                "fact_ids": ids,
-                "interpretation_code": "insufficient_common_coverage",
-            }
-
-        answer = generate_supported_answer(FakeProvider(responder=response), result)
+    def test_complete_multi_year_result_is_conversational_and_evidence_bound(self) -> None:
+        result = complete_result_fixture()
+        answer = generate_supported_answer(
+            FakeProvider(responder=valid_answer_plan), result
+        )
         self.assertFalse(answer["fallback_used"])
+        self.assertIn("satellite-based indicator related to vegetation greenness", answer["text"])
+        self.assertIn("7 February 2021", answer["text"])
+        self.assertIn("12 February 2022", answer["text"])
+        self.assertIn("Available comparisons", answer["text"])
+        self.assertNotIn("plant health improved", answer["text"])
+
+    def test_missing_year_is_natural_and_is_not_bridged_as_adjacent(self) -> None:
+        result = result_fixture()
+        answer = generate_supported_answer(
+            FakeProvider(responder=valid_answer_plan), result
+        )
+        self.assertIn("No suitable observation", answer["text"])
+        self.assertIn("does not bridge", answer["text"])
+        self.assertIn("2021 to 2022", answer["text"])
+        self.assertNotIn("2021 to 2023", answer["text"])
+
+    def test_insufficient_common_coverage_withholds_comparable_trend(self) -> None:
+        answer = generate_supported_answer(
+            FakeProvider(responder=valid_answer_plan), result_fixture()
+        )
+        self.assertIn("could not report a directly comparable multi-year NDVI trend", answer["text"])
+        self.assertIn("different pixel populations", answer["text"])
+
+    def test_small_average_with_mixed_local_categories_is_not_called_stable(self) -> None:
+        result = complete_result_fixture()
+        result["adjacent_differences"][0]["mean"] = 0.0001
+        result["adjacent_differences"][0]["categories"] = {
+            "increased": {"pixels": 40, "fraction": 0.40},
+            "decreased": {"pixels": 35, "fraction": 0.35},
+            "approximately_stable": {"pixels": 25, "fraction": 0.25},
+        }
+        answer = generate_supported_answer(
+            FakeProvider(responder=valid_answer_plan), result
+        )
+        self.assertIn("mean NDVI difference was +0.0001", answer["text"])
+        self.assertIn("The map was mixed", answer["text"])
+        self.assertIn("40.0% increased", answer["text"])
+        self.assertNotIn("the area was stable", answer["text"].lower())
+
+    def test_combined_request_reports_unsupported_analysis_without_inventing_result(self) -> None:
+        execution = {
+            "tool_executions": [
+                {"analysis": "vegetation", "status": "success"},
+                {
+                    "analysis": "construction",
+                    "status": "not_run",
+                    "reason": "requires aligned RGB inputs",
+                },
+            ]
+        }
+        answer = generate_supported_answer(
+            FakeProvider(responder=valid_answer_plan),
+            complete_result_fixture(),
+            execution,
+        )
+        self.assertIn("construction analysis was not run", answer["text"])
+        self.assertNotIn("construction change was found", answer["text"])
+
+    def test_invented_numbers_or_dates_reject_answer_plan(self) -> None:
+        def response(schema):
+            value = valid_answer_plan(schema)
+            value["invented_date"] = "2099-01-01"
+            value["invented_number"] = 99.9
+            return value
+
+        answer = generate_supported_answer(
+            FakeProvider(responder=response), complete_result_fixture()
+        )
+        self.assertTrue(answer["fallback_used"])
+        self.assertIn("unexpected fields", answer["fallback_reason"])
+        self.assertNotIn("2099", answer["text"])
+        self.assertNotIn("99.9", answer["text"])
+
+    def test_unavailable_model_uses_readable_deterministic_fallback(self) -> None:
+        def unavailable(_schema):
+            raise LanguageModelUnavailableError("offline")
+
+        answer = generate_supported_answer(
+            FakeProvider(responder=unavailable), complete_result_fixture()
+        )
+        self.assertTrue(answer["fallback_used"])
+        self.assertIn("satellite-based indicator related to vegetation greenness", answer["text"])
+        self.assertNotIn("{", answer["text"])
+        self.assertIn("offline", answer["fallback_reason"])
+
+    def test_every_supported_claim_uses_checked_renderer(self) -> None:
+        result = complete_result_fixture()
+        answer = generate_supported_answer(
+            FakeProvider(responder=valid_answer_plan), result
+        )
         for fact in supported_facts(result).values():
             self.assertIn(fact, answer["text"])
+
+    def test_attached_answer_is_downloadable_and_machine_record_is_preserved(self) -> None:
+        answer = generate_supported_answer(
+            FakeProvider(responder=valid_answer_plan), complete_result_fixture()
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            record_path = Path(temporary) / "assistant.json"
+            record_path.write_text("{}\n", encoding="utf-8")
+            record = {"outputs": {"assistant_record": str(record_path)}}
+            updated = attach_final_answer(record, answer)
+            answer_path = Path(updated["outputs"]["answer_text"])
+            self.assertTrue(answer_path.is_file())
+            self.assertEqual(answer_path.read_text().strip(), answer["text"])
+            saved = json.loads(record_path.read_text())
+            self.assertEqual(saved["final_answer"]["text"], answer["text"])
+            self.assertEqual(
+                saved["final_answer"]["model_claim_plan"], answer["model_claim_plan"]
+            )
+            self.assertEqual(saved["outputs"]["answer_text"], str(answer_path.resolve()))
 
 
 if __name__ == "__main__":

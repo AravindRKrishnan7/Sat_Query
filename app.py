@@ -475,6 +475,29 @@ def _show_historical_result(
     assistant_execution: Mapping[str, Any] | None = None,
 ) -> None:
     st.subheader("Historical vegetation timeline")
+    if answer:
+        st.markdown("## GeoLens answer")
+        st.markdown(str(answer.get("text", "")))
+        if answer.get("fallback_used"):
+            st.caption(
+                "A checked deterministic explanation is shown because the generated claim plan "
+                "did not pass validation. The rejection reason is retained in technical details."
+            )
+        else:
+            st.caption(
+                "Generated from a validated claim plan; dates, intervals and numerical values come "
+                "from the execution record."
+            )
+        if assistant_execution:
+            answer_path_value = assistant_execution.get("outputs", {}).get("answer_text")
+            if answer_path_value:
+                _download(
+                    Path(answer_path_value),
+                    "Download this answer",
+                    "text/markdown",
+                    "historical-answer",
+                )
+
     status = record["status"]
     if status == "success":
         st.success("All requested annual observations are available.")
@@ -482,29 +505,6 @@ def _show_historical_result(
         st.warning(f"Partial result. Missing years: {record['missing_years']}")
     else:
         st.error("No requested year produced a suitable observation. Details are retained below.")
-
-    if answer:
-        st.markdown("### GeoLens assistant answer")
-        if answer.get("fallback_used"):
-            st.warning(f"Deterministic fallback used: {answer.get('fallback_reason')}")
-        else:
-            st.caption("Model prose accepted; every displayed numerical fact was inserted from tool results.")
-        st.markdown(str(answer.get("text", "")))
-
-    cache = record["cache"]
-    cache_columns = st.columns(2)
-    cache_columns[0].metric("Newly retrieved selected windows", cache["selected_asset_windows_retrieved"])
-    cache_columns[1].metric(
-        "Selected windows loaded from cache", cache["selected_asset_windows_loaded_from_cache"]
-    )
-    if cache["selected_asset_windows_retrieved"] == 0 and cache["selected_asset_windows_loaded_from_cache"]:
-        st.success("All selected observation windows came from the validated matching-AOI cache.")
-    elif cache["selected_asset_windows_retrieved"]:
-        st.info(
-            f"Retrieved {cache['selected_asset_windows_retrieved']} selected observation windows; "
-            f"loaded {cache['selected_asset_windows_loaded_from_cache']} from validated cache entries."
-        )
-    st.caption("Cache matching is tied to the exact confirmed AOI; another area's cache is never substituted.")
 
     for observation in record["annual_observations"]:
         year = observation["year"]
@@ -522,16 +522,6 @@ def _show_historical_result(
             observation["outputs"]["ndvi_png"],
             caption=f"{year} NDVI · grey pixels excluded",
             width="stretch",
-        )
-        metrics = st.columns(4)
-        metrics[0].metric("Valid coverage", f"{observation['valid_coverage']:.1%}")
-        metrics[1].metric("Mean NDVI (year-valid)", f"{observation['per_year_ndvi']['mean']:.3f}")
-        metrics[2].metric("Median NDVI (year-valid)", f"{observation['per_year_ndvi']['median']:.3f}")
-        cloud = observation.get("catalogue_cloud_cover_percent")
-        metrics[3].metric("Catalogue scene cloud", f"{float(cloud):.2f}%" if cloud is not None else "unknown")
-        st.caption(
-            "The year-valid statistic uses this observation's own valid pixels and is not directly "
-            "comparable unless the all-observation common population below is sufficient."
         )
 
     trend = record["common_valid_trend"]
@@ -560,17 +550,11 @@ def _show_historical_result(
         if difference["status"] != "available":
             st.warning(f"{difference['label']}: unavailable — {difference['reason']}")
             continue
-        columns = st.columns((2, 1))
-        columns[0].image(
+        st.image(
             difference["outputs"]["difference_png"],
             caption=f"{difference['before_date']} to {difference['after_date']} NDVI difference",
             width="stretch",
         )
-        categories = difference["categories"]
-        columns[1].metric("Valid pair coverage", f"{difference['valid_coverage']:.1%}")
-        columns[1].metric("NDVI increase", f"{categories['increased']['fraction']:.1%}")
-        columns[1].metric("NDVI decrease", f"{categories['decreased']['fraction']:.1%}")
-        columns[1].metric("Approximately stable", f"{categories['approximately_stable']['fraction']:.1%}")
 
     first_last = record["first_to_last_difference"]
     st.markdown("### First-to-last NDVI difference")
@@ -583,15 +567,42 @@ def _show_historical_result(
     else:
         st.warning(first_last["reason"])
 
-    st.warning(
-        "NDVI increase/decrease categories are not statistically significant change, confirmed "
-        "vegetation gain/loss, deforestation, improved plant health, damage, or a causal explanation."
-    )
     summary_path = Path(record["outputs"]["summary"])
-    st.markdown("### Deterministic summary")
-    st.code(summary_path.read_text(encoding="utf-8"), language=None)
-
-    with st.expander("Data sources, downloads and execution details"):
+    with st.expander("View evidence and technical details"):
+        if answer and answer.get("fallback_used"):
+            st.warning(f"Fallback reason: {answer.get('fallback_reason')}")
+        cache = record["cache"]
+        cache_columns = st.columns(2)
+        cache_columns[0].metric(
+            "Newly retrieved selected windows", cache["selected_asset_windows_retrieved"]
+        )
+        cache_columns[1].metric(
+            "Selected windows loaded from cache", cache["selected_asset_windows_loaded_from_cache"]
+        )
+        st.caption(
+            "Cache matching is tied to the exact confirmed AOI; another area's cache is never substituted."
+        )
+        st.markdown("**Year-valid observation metrics**")
+        st.json([
+            {
+                "year": observation["year"],
+                "status": observation["status"],
+                "acquisition_date": observation.get("acquisition_date"),
+                "valid_coverage": observation.get("valid_coverage"),
+                "per_year_ndvi": observation.get("per_year_ndvi"),
+                "population": observation.get("per_year_population"),
+                "reason": observation.get("reason"),
+            }
+            for observation in record["annual_observations"]
+        ])
+        st.caption(
+            "Year-valid statistics use each observation's own valid pixels. Common-pixel and "
+            "pairwise statistics use the separately identified populations in the record."
+        )
+        st.markdown("**Pairwise comparison metrics**")
+        st.json(record["adjacent_differences"])
+        st.markdown("**Deterministic source summary**")
+        st.code(summary_path.read_text(encoding="utf-8"), language=None)
         st.write(record["provider"])
         st.write({"confirmed_boundary": record["request"]["aoi"], "grid": record["grid"]})
         downloads = st.columns(2)
@@ -778,7 +789,18 @@ def _historical_mode() -> None:
         st.markdown("#### Validated interpretation and tool plan")
         if assistant_plan.boundary_resolution.label:
             st.info(f"Using the {assistant_plan.boundary_resolution.label}")
-        st.json(assistant_plan.record())
+        years = (
+            list(assistant_plan.historical_request.years)
+            if assistant_plan.historical_request is not None
+            else None
+        )
+        st.write(
+            f"Plan status: **{assistant_plan.status.replace('_', ' ')}** · "
+            f"Requested: {', '.join(assistant_plan.interpretation.analyses) or 'none'} · "
+            f"Years: {years or 'not resolved'}"
+        )
+        with st.expander("View plan evidence and technical details"):
+            st.json(assistant_plan.record())
         if assistant_plan.boundary_resolution.missing_information:
             st.warning(
                 "Clarification required: "
@@ -798,7 +820,7 @@ def _historical_mode() -> None:
                 )
                 if tool_result is not None:
                     provider = OllamaProvider(provider_info)
-                    answer = generate_supported_answer(provider, tool_result)
+                    answer = generate_supported_answer(provider, tool_result, execution)
                     execution = attach_final_answer(execution, answer)
                     st.session_state["historical_result"] = tool_result
                     st.session_state["historical_answer"] = answer

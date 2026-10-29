@@ -19,7 +19,6 @@ from satquery.historical import (
     HistoricalRequest,
     HistoricalValidationError,
     build_request,
-    deterministic_summary,
     run_historical,
 )
 
@@ -680,8 +679,30 @@ def execute_tool_plan(
     return record, historical_result
 
 
-def compact_historical_result(result: Mapping[str, Any]) -> dict[str, Any]:
-    """Create the only result surface supplied to answer generation."""
+def _execution_issues(execution_context: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    if not execution_context:
+        return issues
+    executions = execution_context.get("tool_executions")
+    if not isinstance(executions, list):
+        return issues
+    for index, item in enumerate(executions):
+        if not isinstance(item, Mapping) or item.get("status") == "success":
+            continue
+        issues.append({
+            "id": f"execution_issue:{item.get('analysis', 'unknown')}:{index}",
+            "analysis": item.get("analysis"),
+            "status": item.get("status"),
+            "reason": item.get("reason") or item.get("error"),
+        })
+    return issues
+
+
+def compact_historical_result(
+    result: Mapping[str, Any],
+    execution_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Create the complete, bounded evidence surface supplied to answer generation."""
     observations = []
     for item in result["annual_observations"]:
         observations.append({
@@ -689,76 +710,215 @@ def compact_historical_result(result: Mapping[str, Any]) -> dict[str, Any]:
             "status": item["status"],
             "acquisition_date": item.get("acquisition_date"),
             "valid_coverage": item.get("valid_coverage"),
+            "year_valid_ndvi": item.get("per_year_ndvi"),
             "pixel_population": item.get("per_year_population"),
+            "unavailable_reason": item.get("reason"),
         })
     adjacent = []
     for item in result["adjacent_differences"]:
         adjacent.append({
             "label": item["label"],
             "status": item["status"],
+            "before_year": item.get("before_year"),
+            "after_year": item.get("after_year"),
+            "before_date": item.get("before_date"),
+            "after_date": item.get("after_date"),
+            "valid_pixels": item.get("valid_pixels"),
+            "aoi_pixels": item.get("aoi_pixels"),
             "valid_coverage": item.get("valid_coverage"),
             "mean_ndvi_difference": item.get("mean"),
             "threshold": item.get("threshold"),
             "categories": item.get("categories"),
+            "population": "pixels valid on both dates in this comparison",
             "reason": item.get("reason"),
         })
     return {
         "requested_years": result["request"]["years"],
-        "observations": observations,
         "available_years": result["available_years"],
         "missing_years": result["missing_years"],
+        "observations": observations,
         "common_valid_trend": result["common_valid_trend"],
         "adjacent_differences": adjacent,
         "first_to_last_difference": result["first_to_last_difference"],
+        "configured_change_threshold": result["request"]["data_quality_requirements"][
+            "change_threshold"
+        ],
+        "execution_issues": _execution_issues(execution_context),
         "limitations": result["limitations"],
         "outputs": result["outputs"],
     }
 
 
-def supported_facts(result: Mapping[str, Any]) -> dict[str, str]:
-    compact = compact_historical_result(result)
-    available = [item for item in compact["observations"] if item["status"] == "available"]
-    facts: dict[str, str] = {
-        "actual_observations": "Actual acquisitions: "
-        + (", ".join(f"{item['year']}: {item['acquisition_date']}" for item in available) or "none"),
-        "missing_years": f"Unavailable requested years: {compact['missing_years'] or 'none'}.",
-    }
+def _human_date(value: str) -> str:
+    parsed = datetime.strptime(value, "%Y-%m-%d")
+    return f"{parsed.day} {parsed.strftime('%B %Y')}"
+
+
+def _signed_decimal(value: float) -> str:
+    rounded = round(float(value), 4)
+    return "0.0000" if rounded == 0 else f"{rounded:+.4f}"
+
+
+def _answer_claim_ids(compact: Mapping[str, Any]) -> tuple[str, ...]:
     trend = compact["common_valid_trend"]
-    facts["common_coverage"] = (
-        f"All-observation common-valid coverage is {trend['coverage']:.2%} "
-        f"({trend['pixels']} of {trend.get('aoi_pixels', 0)} AOI pixels); this population contains "
-        "pixels valid across every available included observation."
-    )
-    if trend["sufficient"] and trend["annual_statistics"]:
-        values = ", ".join(
-            f"{item['year']} mean NDVI {item['mean']:.4f}"
-            for item in trend["annual_statistics"]
-        )
-        facts["common_trend"] = f"On that fixed common-valid population: {values}."
-    first_last = compact["first_to_last_difference"]
-    if first_last["status"] == "available":
-        facts["first_to_last"] = (
-            f"The {first_last['before_year']}–{first_last['after_year']} pair-valid population covers "
-            f"{first_last['valid_coverage']:.2%} of the AOI and has mean NDVI difference "
-            f"{first_last['mean']:+.4f}; this pair population differs from the all-observation population."
-        )
-    facts["interpretation_limit"] = (
-        "Threshold categories describe NDVI increase, decrease, or approximate stability only; "
-        "they do not prove vegetation gain or loss, plant health, deforestation, damage, or cause."
-    )
-    return facts
+    claims = ["finding:common_trend" if trend["sufficient"] else "finding:insufficient_common"]
+    claims.append("observations:actual_dates")
+    if compact["missing_years"]:
+        claims.append("observations:missing")
+    for comparison in compact["adjacent_differences"]:
+        prefix = "adjacent" if comparison["status"] == "available" else "adjacent_unavailable"
+        claims.append(f"{prefix}:{comparison['label']}")
+    endpoint = compact["first_to_last_difference"]
+    available_intervals = {
+        (item.get("before_year"), item.get("after_year"))
+        for item in compact["adjacent_differences"]
+        if item["status"] == "available"
+    }
+    if endpoint.get("status") == "available" and (
+        endpoint.get("before_year"), endpoint.get("after_year")
+    ) not in available_intervals:
+        claims.append("comparison:first_to_last")
+    claims.extend(issue["id"] for issue in compact["execution_issues"])
+    claims.append("limitation:ndvi")
+    return tuple(claims)
 
 
-def _deterministic_answer(result: Mapping[str, Any], reason: str) -> dict[str, Any]:
-    facts = supported_facts(result)
-    text = "**Deterministic fallback used.** " + reason + "\n\n"
-    text += "\n".join(f"- {fact}" for fact in facts.values())
-    text += "\n\n" + deterministic_summary(result)
+def supported_facts(
+    result: Mapping[str, Any],
+    execution_context: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    """Return auditable claim identifiers and their evidence-bound plain-language rendering."""
+    compact = compact_historical_result(result, execution_context)
     return {
-        "text": text,
+        claim_id: _render_claim(claim_id, compact)
+        for claim_id in _answer_claim_ids(compact)
+    }
+
+
+def _render_claim(claim_id: str, compact: Mapping[str, Any]) -> str:
+    trend = compact["common_valid_trend"]
+    if claim_id == "finding:common_trend":
+        statistics = trend["annual_statistics"]
+        first, last = statistics[0], statistics[-1]
+        if last["mean"] > first["mean"]:
+            comparison = "higher than"
+        elif last["mean"] < first["mean"]:
+            comparison = "lower than"
+        else:
+            comparison = "the same as"
+        return (
+            f"The average NDVI—a satellite-based indicator related to vegetation greenness—in the "
+            f"last available observation was {comparison} the first: {first['mean']:.4f} in "
+            f"{first['year']} and {last['mean']:.4f} in {last['year']} on the same {trend['pixels']:,} "
+            f"pixels. Those pixels cover {trend['coverage']:.1%} of the area and were valid in every "
+            "available observation; the endpoint difference does not imply a steady change between dates."
+        )
+    if claim_id == "finding:insufficient_common":
+        return (
+            "GeoLens could not report a directly comparable multi-year NDVI trend because only "
+            f"{trend['coverage']:.1%} of the area was valid across all available observations. "
+            "Per-year values use different pixel populations, so they are not compared here."
+        )
+    if claim_id == "observations:actual_dates":
+        available = [item for item in compact["observations"] if item["status"] == "available"]
+        dates = ", ".join(
+            f"{item['year']} ({_human_date(item['acquisition_date'])})" for item in available
+        )
+        return (
+            f"The usable satellite observations were {dates}."
+            if dates
+            else "No usable observation was available."
+        )
+    if claim_id == "observations:missing":
+        missing_years = compact["missing_years"]
+        years = ", ".join(str(year) for year in missing_years)
+        reference = "that year" if len(missing_years) == 1 else "those years"
+        return (
+            f"No suitable observation met the configured quality rules for {years}. GeoLens reports "
+            f"no finding for {reference} and does not bridge an affected interval as an "
+            "adjacent-year comparison."
+        )
+    if claim_id.startswith("adjacent:"):
+        label = claim_id.split(":", 1)[1]
+        item = next(value for value in compact["adjacent_differences"] if value["label"] == label)
+        categories = item["categories"]
+        threshold = item["threshold"]
+        return (
+            f"**{_human_date(item['before_date'])} to {_human_date(item['after_date'])}:** on the "
+            f"{item['valid_pixels']:,} pixels valid on both dates "
+            f"({item['valid_coverage']:.1%} of the area), the mean NDVI difference was "
+            f"{_signed_decimal(item['mean_ndvi_difference'])}. The map was mixed: "
+            f"{categories['increased']['fraction']:.1%} increased by more than {threshold:g}, "
+            f"{categories['decreased']['fraction']:.1%} decreased by more than {threshold:g}, and "
+            f"{categories['approximately_stable']['fraction']:.1%} stayed within ±{threshold:g}."
+        )
+    if claim_id.startswith("adjacent_unavailable:"):
+        label = claim_id.split(":", 1)[1]
+        return f"**{label.replace('-to-', ' to ')}:** no adjacent-year comparison is available."
+    if claim_id == "comparison:first_to_last":
+        item = compact["first_to_last_difference"]
+        return (
+            f"Across the separate first-to-last pair population ({item['valid_pixels']:,} pixels; "
+            f"{item['valid_coverage']:.1%} of the area), the mean NDVI difference from "
+            f"{_human_date(item['before_date'])} to {_human_date(item['after_date'])} was "
+            f"{_signed_decimal(item['mean'])}. This population is not the same as the all-observation "
+            "common-pixel population."
+        )
+    if claim_id.startswith("execution_issue:"):
+        issue = next(value for value in compact["execution_issues"] if value["id"] == claim_id)
+        analysis = str(issue.get("analysis") or "requested").replace("_", " ")
+        if issue["status"] == "not_run":
+            return f"The requested {analysis} analysis was not run in this historical vegetation workflow."
+        return f"The requested {analysis} analysis did not complete, so no finding is reported for it."
+    if claim_id == "limitation:ndvi":
+        return (
+            "NDVI does not directly measure plant health, tree count, vegetation area, causes, or "
+            "statistical significance; the threshold categories only describe numerical NDVI differences."
+        )
+    raise LanguageModelValidationError(f"unsupported answer claim identifier: {claim_id}")
+
+
+def _render_conversational_answer(compact: Mapping[str, Any], claim_ids: Sequence[str]) -> str:
+    rendered = {claim_id: _render_claim(claim_id, compact) for claim_id in claim_ids}
+    paragraphs = [rendered[claim_ids[0]], rendered["observations:actual_dates"]]
+    if "observations:missing" in rendered:
+        paragraphs.append(rendered["observations:missing"])
+    comparison_ids = [
+        claim_id for claim_id in claim_ids
+        if claim_id.startswith("adjacent:") or claim_id == "comparison:first_to_last"
+    ]
+    if comparison_ids:
+        paragraphs.append("**Available comparisons**\n\n" + "\n".join(
+            f"- {rendered[claim_id]}" for claim_id in comparison_ids
+        ))
+    unavailable_ids = [
+        claim_id for claim_id in claim_ids
+        if claim_id.startswith("adjacent_unavailable:")
+    ]
+    if unavailable_ids:
+        paragraphs.append("\n".join(f"- {rendered[claim_id]}" for claim_id in unavailable_ids))
+    issue_ids = [claim_id for claim_id in claim_ids if claim_id.startswith("execution_issue:")]
+    if issue_ids:
+        paragraphs.append("\n".join(rendered[claim_id] for claim_id in issue_ids))
+    paragraphs.append(rendered["limitation:ndvi"])
+    return "\n\n".join(paragraphs)
+
+
+def _deterministic_answer(
+    result: Mapping[str, Any],
+    reason: str,
+    execution_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    compact = compact_historical_result(result, execution_context)
+    claim_ids = _answer_claim_ids(compact)
+    return {
+        "text": _render_conversational_answer(compact, claim_ids),
         "fallback_used": True,
         "fallback_reason": reason,
-        "validated_fact_ids": list(facts),
+        "validated_claim_ids": list(claim_ids),
+        "validated_fact_ids": list(claim_ids),
+        "answer_kind": "deterministic_fallback",
+        "model_claim_plan": None,
         "model_runtime": None,
     }
 
@@ -766,103 +926,80 @@ def _deterministic_answer(result: Mapping[str, Any], reason: str) -> dict[str, A
 def generate_supported_answer(
     provider: OllamaProvider,
     result: Mapping[str, Any],
+    execution_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Generate digit-free prose while injecting every numeric claim from validated facts."""
-    compact = compact_historical_result(result)
-    facts = supported_facts(result)
-    fact_ids = list(facts)
-    if not compact["common_valid_trend"]["sufficient"]:
-        expected_headline = "insufficient_comparable_coverage"
-        expected_interpretation = "insufficient_common_coverage"
+    """Use a schema-constrained claim plan, then render only evidence-backed prose."""
+    compact = compact_historical_result(result, execution_context)
+    claim_ids = _answer_claim_ids(compact)
+    trend = compact["common_valid_trend"]
+    if not trend["sufficient"]:
+        expected_kind = "insufficient_common_coverage"
     elif compact["missing_years"]:
-        expected_headline = "partial_historical_ndvi_comparison"
-        expected_interpretation = "missing_years_limit_comparison"
+        expected_kind = "partial_historical_comparison"
     else:
-        expected_headline = "historical_ndvi_comparison"
-        expected_interpretation = "cautious_ndvi_only"
+        expected_kind = "historical_comparison"
+    expected_lead = claim_ids[0]
     schema = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "headline_code": {
-                "type": "string",
-                "enum": [expected_headline],
-            },
-            "fact_ids": {
+            "answer_kind": {"type": "string", "enum": [expected_kind]},
+            "lead_claim_id": {"type": "string", "enum": [expected_lead]},
+            "claim_ids": {
                 "type": "array",
                 "uniqueItems": True,
-                "minItems": len(fact_ids),
-                "maxItems": len(fact_ids),
-                "items": {"type": "string", "enum": fact_ids},
-            },
-            "interpretation_code": {
-                "type": "string",
-                "enum": [expected_interpretation],
+                "minItems": len(claim_ids),
+                "maxItems": len(claim_ids),
+                "items": {"type": "string", "enum": list(claim_ids)},
             },
         },
-        "required": ["headline_code", "fact_ids", "interpretation_code"],
+        "required": ["answer_kind", "lead_claim_id", "claim_ids"],
     }
     prompt = (
-        "Write a cautious GeoLens explanation from the supplied structured result. Return every "
-        "fact ID exactly once and return the schema-constrained headline and interpretation codes. "
-        "Do not generate prose or numerical values.\n\n"
+        "Select the complete evidence-backed claim plan for a concise, non-technical GeoLens answer. "
+        "Return every allowed claim ID exactly once. Do not write prose, dates, numbers, locations, "
+        "causes, or findings outside the schema. The renderer will insert checked language and values.\n\n"
         f"Structured result: {json.dumps(compact, separators=(',', ':'))}\n"
-        f"Available fact IDs: {json.dumps(fact_ids)}"
+        f"Required claim IDs: {json.dumps(claim_ids)}"
     )
     try:
         value, runtime = provider.structured_chat(
             (
-                {"role": "system", "content": "You explain validated geospatial tool results only."},
+                {"role": "system", "content": "You select only validated geospatial result claims."},
                 {"role": "user", "content": prompt},
             ),
             schema,
-            max_tokens=384,
+            max_tokens=512,
         )
-        if set(value) != {"headline_code", "fact_ids", "interpretation_code"}:
-            raise LanguageModelValidationError("answer has missing or unexpected fields")
-        headline_code = value["headline_code"]
-        interpretation_code = value["interpretation_code"]
-        returned_ids = value["fact_ids"]
-        if headline_code != expected_headline or interpretation_code != expected_interpretation:
-            raise LanguageModelValidationError("answer selected a conclusion inconsistent with tool results")
+        if set(value) != {"answer_kind", "lead_claim_id", "claim_ids"}:
+            raise LanguageModelValidationError("answer plan has missing or unexpected fields")
+        if value["answer_kind"] != expected_kind or value["lead_claim_id"] != expected_lead:
+            raise LanguageModelValidationError("answer plan selected an unsupported conclusion")
+        returned_ids = value["claim_ids"]
         if not isinstance(returned_ids, list) or any(not isinstance(item, str) for item in returned_ids):
-            raise LanguageModelValidationError("answer fact IDs must be a string array")
-        if len(returned_ids) != len(set(returned_ids)) or set(returned_ids) != set(fact_ids):
-            raise LanguageModelValidationError("answer omitted or invented a fact ID")
-        ordered_facts = [facts[item] for item in returned_ids]
-        headlines = {
-            "historical_ndvi_comparison": "Historical NDVI comparison",
-            "partial_historical_ndvi_comparison": "Partial historical NDVI comparison",
-            "insufficient_comparable_coverage": "Historical comparison with insufficient common coverage",
-        }
-        explanations = {
-            "cautious_ndvi_only": (
-                "The available observations support a cautious NDVI comparison on the documented "
-                "pixel populations, subject to the tool limitations shown below."
-            ),
-            "missing_years_limit_comparison": (
-                "The available observations support only a partial NDVI comparison. Missing requested "
-                "years are not filled, bridged, or assigned findings."
-            ),
-            "insufficient_common_coverage": (
-                "A directly comparable trend is withheld because the configured common-valid coverage "
-                "requirement was not met."
-            ),
-        }
-        text = f"### {headlines[headline_code]}\n\n"
-        text += "\n".join(f"- {fact}" for fact in ordered_facts)
-        text += f"\n\n{explanations[interpretation_code]}"
+            raise LanguageModelValidationError("answer claim IDs must be a string array")
+        if len(returned_ids) != len(set(returned_ids)) or set(returned_ids) != set(claim_ids):
+            raise LanguageModelValidationError("answer plan omitted or invented a claim ID")
         return {
-            "text": text,
+            "text": _render_conversational_answer(compact, claim_ids),
             "fallback_used": False,
             "fallback_reason": None,
-            "validated_fact_ids": returned_ids,
-            "headline_code": headline_code,
-            "interpretation_code": interpretation_code,
+            "validated_claim_ids": list(claim_ids),
+            "validated_fact_ids": list(claim_ids),
+            "answer_kind": expected_kind,
+            "model_claim_plan": {
+                "answer_kind": value["answer_kind"],
+                "lead_claim_id": value["lead_claim_id"],
+                "claim_ids": list(returned_ids),
+            },
             "model_runtime": runtime,
         }
     except LanguageModelError as exc:
-        return _deterministic_answer(result, f"Language-model answer rejected: {exc}")
+        return _deterministic_answer(
+            result,
+            f"Language-model answer rejected: {exc}",
+            execution_context,
+        )
 
 
 def attach_final_answer(
@@ -872,5 +1009,10 @@ def attach_final_answer(
     updated = dict(assistant_record)
     updated["final_answer"] = dict(answer)
     path = Path(updated["outputs"]["assistant_record"])
+    answer_path = path.with_name("answer.md")
+    temporary = answer_path.with_suffix(".tmp.md")
+    temporary.write_text(str(answer.get("text", "")) + "\n", encoding="utf-8")
+    temporary.replace(answer_path)
+    updated["outputs"] = {**updated["outputs"], "answer_text": str(answer_path.resolve())}
     _write_json(path, updated)
     return updated
