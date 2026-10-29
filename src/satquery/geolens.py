@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import uuid
@@ -33,6 +34,8 @@ class PreparedImage:
     original_size: tuple[int, int]
     original_format: str
     resized: bool
+    original_bytes: int
+    original_sha256: str
 
 
 def prepare_uploaded_image(data: bytes, role: str, resize: bool) -> PreparedImage:
@@ -72,7 +75,15 @@ def prepare_uploaded_image(data: bytes, role: str, resize: bool) -> PreparedImag
         )
     if was_resized:
         image = image.resize((256, 256), Image.Resampling.LANCZOS)
-    return PreparedImage(role, image, original_size, original_format, was_resized)
+    return PreparedImage(
+        role,
+        image,
+        original_size,
+        original_format,
+        was_resized,
+        len(data),
+        hashlib.sha256(data).hexdigest(),
+    )
 
 
 def create_unique_run_directory(root: Path, prefix: str) -> Path:

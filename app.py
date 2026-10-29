@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +58,12 @@ from satquery.infrastructure import (  # noqa: E402
     missing_image_message,
     validate_acquisition_dates,
     write_infrastructure_audit,
+)
+from satquery.infrastructure_timeline import (  # noqa: E402
+    InfrastructureTimelineError,
+    execute_infrastructure_timeline,
+    timeline_request_fingerprint,
+    validate_timeline_observations,
 )
 from satquery.language import (  # noqa: E402
     LanguageModelError,
@@ -235,7 +242,7 @@ def _show_construction_result(
         st.json(record)
 
 
-def _construction_mode() -> None:
+def _legacy_construction_pair_mode() -> None:
     st.header("Buildings and infrastructure")
     st.write(
         "Ask a question and upload both a before image and an after image of the same location. "
@@ -422,6 +429,346 @@ def _construction_mode() -> None:
             st.info(
                 "The question, images, dates, or preparation setting changed. The previous run "
                 "remains on disk but is not shown as a result for these inputs."
+            )
+
+
+def _show_infrastructure_timeline(record: Mapping[str, Any]) -> None:
+    answer_path = Path(record["outputs"]["timeline_answer"])
+    timeline_path = Path(record["outputs"]["timeline_record"])
+    if not answer_path.is_file() or not timeline_path.is_file():
+        st.error("The retained timeline is missing its answer or execution record.")
+        return
+
+    st.subheader("GeoLens timeline answer")
+    st.markdown(answer_path.read_text(encoding="utf-8"))
+    if record.get("status") == "partial":
+        st.warning("Some comparisons failed. Completed intervals are preserved below.")
+    elif record.get("status") == "failed":
+        st.error("No timeline comparison completed successfully.")
+
+    st.subheader("Chronological observations")
+    observations = list(record["observations"])
+    columns = st.columns(len(observations))
+    for column, observation in zip(columns, observations, strict=True):
+        prepared = observation["prepared_file"]
+        original = observation["original_upload"]
+        column.image(
+            prepared["path"],
+            caption=(
+                f"{observation['acquisition_date']} · {original['filename']} · "
+                f"prepared 256×256 RGB"
+            ),
+            width="stretch",
+        )
+
+    st.subheader("Comparison evidence")
+    for comparison in record["comparisons"]:
+        interval = f"{comparison['before_date']} → {comparison['after_date']}"
+        if comparison["kind"] == "endpoint":
+            st.markdown(f"### Overall endpoint comparison · {interval}")
+            st.caption(
+                "This prediction compares only the first and last observations. It is not a sum "
+                "of the consecutive results and does not establish continuous change."
+            )
+        else:
+            st.markdown(f"### Consecutive interval · {interval}")
+        if comparison["status"] != "success":
+            st.error(f"Comparison failed: {comparison.get('error', 'unknown error')}")
+            continue
+
+        st.image(
+            comparison["overlay"],
+            caption=f"Prediction overlay for {interval}",
+            width="stretch",
+        )
+        st.markdown(
+            "**Overlay legend:** Red: predicted building changes. Yellow: predicted road changes."
+        )
+        st.caption(
+            "Each overlay is an independent model prediction for its labelled interval, not a "
+            "verified inventory or a count of buildings or roads."
+        )
+        with st.expander(f"View evidence and technical details · {interval}"):
+            execution_path = Path(comparison["execution_record"])
+            assistant_path = Path(comparison["assistant_record"])
+            execution = json.loads(execution_path.read_text(encoding="utf-8"))
+            assistant = json.loads(assistant_path.read_text(encoding="utf-8"))
+            st.markdown("**Raw model caption**")
+            st.code(execution["model_outputs"]["caption"]["text"] or "[empty]", language=None)
+            st.markdown("**Predicted mask classes and pixel populations**")
+            st.json(execution["model_outputs"]["mask_class_distribution"])
+            st.markdown("**Input identity and timings**")
+            st.json(
+                {
+                    "input_identity_verified": comparison["input_identity_verified"],
+                    "inputs": execution["inputs"],
+                    "timing_seconds": execution["runtime"]["timing_seconds"],
+                    "answer_validation": assistant.get("answer_validation"),
+                }
+            )
+            download_columns = st.columns(3)
+            key = comparison["id"]
+            with download_columns[0]:
+                _download(
+                    Path(comparison["overlay"]),
+                    "Download overlay",
+                    "image/png",
+                    f"{key}-overlay",
+                )
+            with download_columns[1]:
+                _download(
+                    Path(comparison["class_mask"]),
+                    "Download coloured mask",
+                    "image/png",
+                    f"{key}-mask",
+                )
+            with download_columns[2]:
+                _download(
+                    Path(comparison["raw_caption"]),
+                    "Download raw caption",
+                    "text/plain",
+                    f"{key}-caption",
+                )
+            record_columns = st.columns(3)
+            with record_columns[0]:
+                _download(
+                    Path(comparison["answer_file"]),
+                    "Download interval answer",
+                    "text/markdown",
+                    f"{key}-answer",
+                )
+            with record_columns[1]:
+                _download(
+                    execution_path,
+                    "Download execution record",
+                    "application/json",
+                    f"{key}-execution",
+                )
+            with record_columns[2]:
+                _download(
+                    assistant_path,
+                    "Download assistant record",
+                    "application/json",
+                    f"{key}-assistant",
+                )
+
+    download_columns = st.columns(2)
+    with download_columns[0]:
+        _download(
+            answer_path,
+            "Download timeline answer",
+            "text/markdown",
+            "timeline-answer",
+        )
+    with download_columns[1]:
+        _download(
+            timeline_path,
+            "Download timeline execution record",
+            "application/json",
+            "timeline-record",
+        )
+    with st.expander("View timeline provenance and technical details"):
+        st.json(record)
+
+
+def _construction_mode() -> None:
+    st.header("Buildings and infrastructure")
+    st.write(
+        "Ask a question and upload 2–4 dated images of the same location. GeoLens compares each "
+        "consecutive pair with the existing change model."
+    )
+    question = st.text_area(
+        "What would you like to know about the changes?",
+        placeholder="Example: What building and road changes does the model predict over time?",
+        key="infrastructure-timeline-question",
+        max_chars=2_000,
+    )
+    provider_info = _cached_language_provider()
+    if provider_info.available:
+        st.caption(
+            f"Question interpretation uses the local {provider_info.identifier} model. "
+            "It cannot add findings beyond the interval outputs."
+        )
+    else:
+        st.warning(f"Local language model unavailable: {provider_info.reason}")
+
+    files = st.file_uploader(
+        "Timeline images",
+        type=("png", "jpg", "jpeg"),
+        accept_multiple_files=True,
+        key="construction-timeline-images",
+        help="Upload 2–4 observations. Dates entered below determine chronological order.",
+    )
+    files = list(files or [])
+    if len(files) < 2:
+        st.info(
+            f"Add {2 - len(files)} more image{'s' if len(files) != 1 else ''} "
+            "to run a timeline."
+        )
+    elif len(files) > 4:
+        st.error("Upload no more than four images.")
+
+    st.warning(
+        "The model requires 256×256 RGB inputs. Resizing changes pixel dimensions only; it does "
+        "not register images, establish alignment, create detail, or guarantee comparable ground "
+        "resolution."
+    )
+    resize = st.checkbox(
+        "Create explicit 256×256 prepared copies when dimensions differ (Lanczos resampling)",
+        value=False,
+        key="construction-timeline-resize",
+    )
+    date_values: list[str] = []
+    for index, uploaded in enumerate(files, start=1):
+        date_values.append(
+            st.text_input(
+                f"Acquisition date for image {index}: {uploaded.name}",
+                placeholder="YYYY-MM-DD",
+                key=f"construction-timeline-date-{index}",
+            )
+        )
+
+    prepared_images = []
+    preparation_errors: list[str] = []
+    for index, uploaded in enumerate(files, start=1):
+        try:
+            prepared_images.append(
+                prepare_uploaded_image(uploaded.getvalue(), f"image {index}", resize)
+            )
+        except GeoLensInputError as exc:
+            preparation_errors.append(str(exc))
+    for message in preparation_errors:
+        st.error(message)
+
+    observations = None
+    observation_error: str | None = None
+    if len(files) >= 2 and not preparation_errors:
+        try:
+            observations = validate_timeline_observations(
+                [item.name for item in files], prepared_images, date_values
+            )
+        except InfrastructureTimelineError as exc:
+            observation_error = str(exc)
+            st.error(observation_error)
+
+    if observations:
+        st.markdown("**Chronological order used for analysis**")
+        preview_columns = st.columns(len(observations))
+        for column, observation in zip(preview_columns, observations, strict=True):
+            preparation = (
+                f"{observation.prepared.original_size[0]}×"
+                f"{observation.prepared.original_size[1]} → 256×256"
+                if observation.prepared.resized
+                else "unchanged 256×256 RGB"
+            )
+            column.image(
+                observation.prepared.image,
+                caption=(
+                    f"{observation.acquisition_date.isoformat()} · {observation.filename} · "
+                    f"{preparation}"
+                ),
+                width="stretch",
+            )
+
+    include_endpoint = False
+    if observations and len(observations) > 2:
+        include_endpoint = st.checkbox(
+            "Also run a separate first-to-last endpoint comparison",
+            value=False,
+            key="construction-timeline-endpoint",
+            help="This is an independent model run, not a sum of consecutive predictions.",
+        )
+    aligned = st.checkbox(
+        "I confirm all uploaded images depict the same extent and are already spatially aligned.",
+        value=False,
+        key="construction-timeline-aligned",
+    )
+
+    prerequisites: list[str] = []
+    if not CHECKPOINT.is_file():
+        prerequisites.append(f"verified checkpoint is missing: {CHECKPOINT}")
+    if not CHANGE_SOURCE.is_dir():
+        prerequisites.append(f"prepared Change-Agent source is missing: {CHANGE_SOURCE}")
+    for message in prerequisites:
+        st.error(message)
+
+    upload_bytes = [item.getvalue() for item in files]
+    request_fingerprint = timeline_request_fingerprint(
+        question,
+        upload_bytes,
+        date_values,
+        resize,
+        include_endpoint,
+    )
+    can_analyse = bool(
+        question.strip()
+        and observations
+        and aligned
+        and not preparation_errors
+        and observation_error is None
+        and not prerequisites
+        and provider_info.available
+    )
+    if st.button("Run timeline analysis", type="primary", disabled=not can_analyse):
+        try:
+            with st.status(
+                "Interpreting the question and comparing the timeline...", expanded=True
+            ) as status:
+                interpretation = interpret_infrastructure_request(
+                    OllamaProvider(provider_info), question
+                )
+                parent = create_unique_run_directory(
+                    GEOLENS_OUTPUTS / "construction-timelines", "timeline"
+                )
+                comparison_number = 0
+
+                def run_comparison(
+                    before_path: Path, after_path: Path, output_directory: Path
+                ) -> Mapping[str, Any]:
+                    nonlocal comparison_number
+                    comparison_number += 1
+                    st.write(f"Running independent comparison {comparison_number}")
+                    args = argparse.Namespace(
+                        before=before_path,
+                        after=after_path,
+                        checkpoint=CHECKPOINT,
+                        output_dir=output_directory,
+                        device="cpu",
+                        source_dir=CHANGE_SOURCE,
+                    )
+                    return run_change_agent(args, model_loader=_streamlit_model_loader)
+
+                timeline = execute_infrastructure_timeline(
+                    parent_directory=parent,
+                    question=question.strip(),
+                    fingerprint=request_fingerprint,
+                    interpretation=interpretation,
+                    observations=observations,
+                    resize_requested=resize,
+                    include_endpoint=include_endpoint,
+                    comparison_runner=run_comparison,
+                )
+                status.update(
+                    label=(
+                        "Timeline analysis complete"
+                        if timeline["status"] == "success"
+                        else "Timeline analysis finished with comparison failures"
+                    ),
+                    state="complete" if timeline["status"] == "success" else "error",
+                    expanded=False,
+                )
+            st.session_state["infrastructure_timeline_result"] = timeline
+        except (InfrastructureTimelineError, LanguageModelError, RuntimeError) as exc:
+            st.error(f"Buildings and infrastructure timeline failed: {exc}")
+
+    retained = st.session_state.get("infrastructure_timeline_result")
+    if isinstance(retained, Mapping):
+        if retained.get("request_fingerprint") == request_fingerprint:
+            _show_infrastructure_timeline(retained)
+        else:
+            st.info(
+                "The question, an image, a date, endpoint option, or preparation setting changed. "
+                "The previous timeline remains on disk but is not shown for these inputs."
             )
 
 

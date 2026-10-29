@@ -35,6 +35,10 @@ class GeoLensInterfaceTests(unittest.TestCase):
         self.assertEqual([], list(app.exception))
         self.assertEqual("Buildings and infrastructure", app.header[0].value)
         self.assertTrue(any("What would you like" in item.label for item in app.text_area))
+        uploader = app.get("file_uploader")[0]
+        self.assertEqual("Timeline images", uploader.label)
+        self.assertTrue(uploader.accept_multiple_files)
+        self.assertIn("Run timeline analysis", [item.label for item in app.button])
 
     def test_demo_aoi_is_confirmed_once_and_survives_unchanged_rerun(self) -> None:
         app = self._app()

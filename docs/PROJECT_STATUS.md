@@ -14,41 +14,54 @@ analysis path.
 
 ### Buildings and infrastructure
 
-The uploaded-image workflow now requires a natural-language question, a before
-image, an after image and the existing explicit same-location/alignment
-confirmation. Acquisition dates are optional user-supplied ISO values; the app
-does not infer them. Supplying only one image produces a direct request for the
-missing image and cannot start inference.
+The uploaded-image workflow now accepts two to four images, requires an ISO
+acquisition date for every observation, rejects missing or duplicate dates,
+sorts the previews chronologically, and retains the explicit same-extent and
+alignment confirmation. Supplying fewer than two or more than four images
+cannot start inference. Optional Lanczos preparation remains explicit and is
+described only as resizing—not registration or restored spatial detail.
+
+GeoLens runs the unchanged two-image MCI model independently for each
+consecutive pair. An optional first-to-last comparison for timelines longer
+than two observations is labelled as a separate endpoint run, never a sum of
+the intermediate predictions. The verified model is cached and reused across
+intervals. Parent execution is incremental: a failed interval records its
+error while earlier completed comparisons remain available, and independent
+later comparisons continue.
 
 Local `qwen3:8b` extracts a constrained question contract for building change,
 road change, general image change, instance-count requests and requested
 spatial descriptions. Exact source-text evidence is required for every true
-field. The application—not the language model—then renders the answer from
-that validated intent, the recorded change categories and a conservative
-assessment of the raw caption. Only tightly matched building/road addition,
-removal or no-change phrases may be paraphrased. Quantities, locations, dates,
-causes and instruction-like caption text are discarded. Category and caption
-agreement never establishes spatial consistency. The before/after views and
-overlay are prominent; the raw caption, category counts, assessment,
-disagreement state, model record and assistant audit are in **View evidence and
-technical details**.
+field. The application—not the language model—then renders each interval from
+that validated intent, its recorded change categories and its own conservative
+caption assessment. Only tightly matched building/road addition, removal or
+no-change phrases may be paraphrased. Quantities, locations, dates, causes and
+instruction-like caption text are discarded. Category and caption agreement
+never establishes spatial consistency. The chronological observations and
+overlays remain visible; raw captions, category counts, hashes, timings,
+assessment, disagreement state and JSON records are expandable.
 
-The real Streamlit integration-harness run used the pinned 256 × 256 pair and
-the verified CPU checkpoint. The mask contained 6,509 predicted
-building-change pixels, zero road-change pixels and 59,027 background pixels;
-the raw caption was `some houses are built along the road`. The conservative
-caption assessment recorded building addition, treated `along the road` as
-context rather than a road-change claim, and recorded building/category
-agreement without claiming spatial agreement. The resulting main answer was:
-“The model suggests that houses were added between the two images. The red
-highlights show the areas identified as building changes. It did not detect
-road changes. This is a model interpretation, not a verified real-world
-record.” The new mask, legend and overlay remain unchanged.
+The real Streamlit integration-harness run used three aligned observations: the
+pinned RSICC start and end samples plus a deliberately synthetic 50% pixel
+blend as the midpoint. The dates 2000-01-01 through 2000-01-03 are explicitly
+artificial demonstration labels, not image acquisition dates. Local
+`qwen3:8b` interpreted the question and the verified CPU checkpoint completed
+two consecutive comparisons plus the independent endpoint comparison. The
+model loaded once and was reused. The first interval and endpoint descriptions
+suggested houses were added; the second interval reported no highlighted
+building or road changes and an unclear caption. These are model predictions
+on a synthetic sequence, not historical findings.
 
-- MCI record:
-  `outputs/geolens/construction/run-20261029T041141443605Z-0862c8c66c/run.json`
-- Assistant record:
-  `outputs/geolens/construction/run-20261029T041141443605Z-0862c8c66c/assistant.json`
+The parent record preserves original upload filename/bytes/SHA-256, prepared
+path/SHA-256 and settings for every observation, plus exact interval inputs,
+dates, answers, overlays, errors and child records. The request fingerprint
+includes every image byte stream, date, question, resizing choice and endpoint
+option, so a change hides the retained timeline without deleting it.
+
+- Timeline record:
+  `outputs/geolens/construction-timelines/timeline-20261029T044436573706Z-172e36b1a6/timeline.json`
+- Timeline answer:
+  `outputs/geolens/construction-timelines/timeline-20261029T044436573706Z-172e36b1a6/timeline-answer.md`
 
 ### Vegetation history
 
@@ -75,15 +88,16 @@ output paths and the intentionally revised prose differ.
 
 ### Verification
 
-- All 79 lightweight regression tests pass, including fourteen focused uploaded-
-  infrastructure tests and the preserved MCI, prepared two-date vegetation,
+- All 86 lightweight regression tests pass, including twenty-one focused uploaded-
+  infrastructure/timeline tests and the preserved MCI, prepared two-date vegetation,
   historical cache/scaling and language-answer suites.
 - The expanded real `ollama/qwen3:8b` compatibility command passes all 13
   structured cases: ten vegetation-history cases and three uploaded-pair cases.
-- Streamlit's integration harness completed both real workflows, verified
-  one-image clarification, downloads, expandable evidence and result
-  persistence across ordinary reruns. No browser was connected to the browser
-  control surface, so visible browser interaction is not claimed.
+- Streamlit's integration harness completed the real three-observation upload,
+  date ordering, alignment confirmation, explicit Run action, three MCI calls,
+  interval and parent downloads, and expandable evidence without exceptions.
+  No browser was connected to the browser control surface, so visible browser
+  interaction is not claimed.
 
 ## Infrastructure demo feasibility and typed observations
 
@@ -202,7 +216,7 @@ Primary references: [Maxar Open Data on AWS](https://registry.opendata.aws/maxar
   request is now in a fallback expander. The readable checked answer remains
   above images and charts; raw plans, pixel populations, provider details and
   machine records remain expandable and downloadable.
-- The full lightweight suite passes 79 tests. Three Streamlit interface tests
+- The full lightweight suite passes 86 tests. Three Streamlit interface tests
   verify workflow availability/default selection, one-time demo confirmation,
   unchanged reruns, and reset invalidation. Existing tests continue to cover
   changed-boundary invalidation, combined intent, missing years, unsupported
@@ -353,7 +367,7 @@ Streamlit reruns do not execute the tool again.
 
 ### Language-interface verification and limitations
 
-- 79 lightweight tests pass. Twenty-seven historical language-interface tests cover unavailable
+- 86 lightweight tests pass. Twenty-seven historical language-interface tests cover unavailable
   service, missing/invented dates, unconfirmed AOI, unsupported construction
   and roads, combined partial planning/execution, preset/application-state AOI
   resolution, conflicting places, boundary invalidation, tool failure, missing
@@ -587,9 +601,9 @@ cause.
 
 ### Historical verification and limitations
 
-- 79 lightweight tests pass: the original construction and two-date
+- 86 lightweight tests pass: the infrastructure timeline and two-date
   vegetation regressions, eleven historical tests, twenty-seven historical
-  language-interface tests, fourteen uploaded-infrastructure tests and three
+  language-interface tests, twenty-one uploaded-infrastructure/timeline tests and three
   focused Streamlit layout/state tests. Historical coverage includes unconfirmed and oversized AOIs,
   stale-state invalidation, invalid dates/request size, unsupported
   construction, scaling representations, cache failure, missing-year
@@ -649,11 +663,11 @@ result-contract errors in user-facing language.
 
 - Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
   only in the project `.venv` and pinned in `requirements.in`.
-- All 79 lightweight tests pass. The local-interface tests cover workflow
+- All 86 lightweight tests pass. The local-interface tests cover workflow
   selection/default state, one-time demo confirmation and reset invalidation, plus bounded
   PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
   and execution-record validation; eleven historical, twenty-seven historical
-  language and fourteen uploaded-infrastructure tests cover the contracts listed
+  language and twenty-one uploaded-infrastructure/timeline tests cover the contracts listed
   above.
 - Streamlit's integration harness rendered both main workflows without
   exceptions and ran real MCI and exact-AOI cached historical analysis, not

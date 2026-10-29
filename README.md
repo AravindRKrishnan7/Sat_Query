@@ -3,8 +3,8 @@
 SatQuery AI is an early satellite change-analysis prototype with exactly two
 user-facing GeoLens workflows over two independent analysis paths:
 
-- **Buildings and infrastructure:** Change-Agent MCI inference on an uploaded,
-  already aligned before/after RGB pair.
+- **Buildings and infrastructure:** consecutive Change-Agent MCI inference on
+  a timeline of two to four dated, already aligned RGB images.
 - **Vegetation history:** a bounded historical Sentinel-2 annual NDVI timeline
   for a user-confirmed rectangle.
 
@@ -49,15 +49,20 @@ Open [http://127.0.0.1:8501](http://127.0.0.1:8501). The server binds only to
 the loopback interface. It does not download model or satellite assets on
 startup.
 
-**Buildings and infrastructure** requires a natural-language question plus
-both a before and an after PNG/JPEG. Optional acquisition dates are accepted as
-user-supplied ISO dates and are never inferred from image pixels. A single
-image cannot run a comparison: the interface asks for the missing half. The
-model still receives only 256 × 256 RGB inputs. Optional resizing is explicit,
-produces a prepared-copy preview, and does not imply registration, alignment,
-suitable ground resolution, or restored detail. Analysis starts only after the
-user confirms that the pair depicts the same already aligned location and
-clicks **Analyse uploaded pair**.
+**Buildings and infrastructure** requires a natural-language question and two
+to four PNG/JPEG observations. Every image requires a user-supplied ISO
+acquisition date; GeoLens rejects missing or duplicate dates, sorts the images
+chronologically, and previews the order before execution. It runs the existing
+two-image model independently for every consecutive pair. With four images,
+that means A→B, B→C and C→D. An optional first-to-last comparison is a separate
+model run—not a sum of intermediate predictions and not evidence of continuous
+growth. Completed intervals remain available if a later comparison fails.
+
+The model still receives only 256 × 256 RGB inputs. Optional resizing is
+explicit, produces prepared-copy previews, and does not imply registration,
+alignment, suitable ground resolution, or restored detail. Analysis starts
+only after the user confirms that all observations depict the same extent and
+are already aligned, then clicks **Run timeline analysis**.
 
 The local language model extracts constrained building, road, general-change,
 count and location-question intent. GeoLens then renders checked prose from
@@ -67,8 +72,12 @@ building instances, so questions such as “How many new buildings?” receive a
 explicit unsupported-count explanation; connected mask components are never
 reported as buildings. Road-change pixels are not called new roads. The raw
 caption remains a separate model-head output and may disagree with the mask.
-Each run preserves the original MCI record plus `answer.md` and an assistant
-audit record.
+Each interval preserves the original MCI record plus `answer.md` and an
+assistant audit record. A parent `timeline.json` records chronological dates,
+original upload filenames and SHA-256 hashes, prepared-file hashes and settings,
+interval status, answers, overlays and record references. Changing any image,
+date, question, resizing choice or endpoint option invalidates the displayed
+timeline without deleting its unique output directory.
 
 **Vegetation history** is the default GeoLens mode. On its first session run it
 activates the documented Alappuzha demo area through the same validator used
@@ -92,7 +101,9 @@ prepared two-date NDVI runner remains available through the documented command
 line path below.
 
 GeoLens writes every execution to a new ignored directory beneath
-`outputs/geolens/`. Uploaded images receive unique internal filenames; weights,
+`outputs/geolens/`. Infrastructure timelines use
+`outputs/geolens/construction-timelines/`; their prepared observations and
+comparison artifacts remain within one unique parent directory. Weights,
 prepared data, uploads, and generated results remain excluded from Git. The
 local upload limit is 10 MB per image.
 

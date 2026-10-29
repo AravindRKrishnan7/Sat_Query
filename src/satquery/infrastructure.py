@@ -398,7 +398,10 @@ def infrastructure_answer_details(
     building_direction = building_caption["direction"]
     road_direction = road_caption["direction"]
 
-    if building_requested and road_requested and not building_present and not road_present:
+    joint_absence_handled = (
+        building_requested and road_requested and not building_present and not road_present
+    )
+    if joint_absence_handled:
         if caption["no_change"] and caption["safe_for_paraphrase"]:
             sentences.append(f"The model did not identify building or road changes{period}.")
             sentences.append("No red or yellow change highlights were produced.")
@@ -409,6 +412,7 @@ def infrastructure_answer_details(
             sentences.append(
                 f"The model-generated description suggests {label} were {verb}, but no building changes were highlighted."
             )
+            sentences.append("No road changes were highlighted.")
         else:
             sentences.append(f"The model did not identify building or road changes{period}.")
             sentences.append("Its generated description does not provide a clear change explanation.")
@@ -435,7 +439,7 @@ def infrastructure_answer_details(
         else:
             sentences.append(f"The model did not identify building changes{period}.")
 
-    if road_requested:
+    if road_requested and not joint_absence_handled:
         if road_present:
             if caption["safe_for_paraphrase"] and road_direction in {"added", "removed"}:
                 verb = "added" if road_direction == "added" else "removed"
