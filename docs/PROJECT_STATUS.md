@@ -10,6 +10,60 @@ AI model for its calculations. A separate local language-model layer interprets
 requests and selects validated result statements without changing either
 analysis path.
 
+## Result exploration, grounded follow-ups and PDF export
+
+The main GeoLens views now use a scoped navy/teal presentation layer, clearer
+step labels and compact result selectors. The two workflow choices, existing
+inputs, explicit Run actions, calculations, model predictions and execution
+records are unchanged.
+
+Infrastructure timelines show one selected comparison at a time. A native
+slider composes a display-only vertical reveal from the exact prepared before
+and after files after their paths and SHA-256 values are checked against the
+parent and child records. A side-by-side fallback and the saved prediction
+overlay are separate toggles. Historical results similarly show one dated
+true-colour/NDVI pair and one NDVI difference interval while retaining all
+missing-year warnings and evidence downloads.
+
+Both result views now provide follow-up conversation tied to the active
+analysis ID. Local `ollama/qwen3:8b` selects a constrained intent; the
+application renders the answer from saved evidence. It does not give the model
+an execution tool, accept arbitrary prose as a finding, or rerun an analysis.
+Different dates require a new reviewed analysis. Counts, causes, vegetation
+cover, tree counts and ambiguous intervals remain limited or require
+clarification. An unavailable or rejected classifier response uses the same
+readable deterministic renderer and records the fallback reason.
+
+Illustrated A4 PDF export is available behind an explicit button. The exporter
+imports neither analysis engine and consumes only saved records and visual
+artifacts. Infrastructure export rechecks prepared hashes and child input
+identity; it preserves user-supplied-date warnings, failed intervals, captions,
+class populations and model limitations. Historical export includes actual and
+missing observations, true-colour/NDVI panels, difference maps, exact pairwise
+populations, scaling source, grid/cache provenance and NDVI limitations. The
+four-page infrastructure and six-page vegetation example reports were rendered
+through Poppler and every page was visually inspected with no clipping,
+overlap or unreadable text.
+
+Verification on 2026-10-29:
+
+- all 101 regression tests pass;
+- the real `ollama/qwen3:8b` compatibility command passes all 13 cases;
+- real-model follow-ups correctly selected `road_changes` for the saved
+  synthetic timeline and `missing_observation` for the cached Alappuzha result,
+  with no fallback and `execution_performed: false` in both records;
+- Streamlit's integration harness restored the exact three-image synthetic
+  timeline from original byte streams and dates, exercised the 35% comparison
+  divider, both display toggles, follow-up persistence and PDF export, then
+  restored the cached Alappuzha result and exercised missing-year follow-up and
+  PDF export. Neither flow created an analysis directory or modified its saved
+  execution record;
+- the correct checkout's port-8501 process predated the visual changes and was
+  restarted successfully at `http://127.0.0.1:8501`;
+- no browser instance was connected to the browser-control surface. Visible
+  browser interaction is therefore not claimed; server startup and Streamlit
+  integration testing are reported separately.
+
 ## Two-workflow GeoLens delivery
 
 ### Buildings and infrastructure
@@ -119,9 +173,9 @@ output paths and the intentionally revised prose differ.
 
 ### Verification
 
-- All 87 lightweight regression tests pass, including twenty-two focused uploaded-
-  infrastructure/timeline tests and the preserved MCI, prepared two-date vegetation,
-  historical cache/scaling and language-answer suites.
+- All 101 regression tests pass, including focused presentation, grounded
+  follow-up and PDF-export tests plus the preserved MCI, prepared two-date
+  vegetation, historical cache/scaling and language-answer suites.
 - The expanded real `ollama/qwen3:8b` compatibility command passes all 13
   structured cases: ten vegetation-history cases and three uploaded-pair cases.
 - Streamlit's integration harness completed the real three-observation upload,

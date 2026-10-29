@@ -100,6 +100,40 @@ history**. Their inputs and results are not moved between workflows. The
 prepared two-date NDVI runner remains available through the documented command
 line path below.
 
+### Explore and export completed results
+
+Completed results use a restrained navy-and-teal presentation layer while the
+underlying records and calculations remain unchanged. In **Buildings and
+infrastructure**, select one saved interval at a time and move the
+before/after divider to compare the exact prepared inputs recorded for that
+child execution. The divider is display-only. A side-by-side fallback and the
+prediction overlay remain available independently. GeoLens verifies the
+prepared paths and SHA-256 values before composing the comparison view.
+
+In **Vegetation history**, choose one dated true-colour/NDVI observation and
+one available or unavailable NDVI interval at a time. Missing-year warnings
+remain visible, and the fixed difference legend continues to distinguish NDVI
+increase, decrease, little difference and excluded pixels.
+
+Both workflows include **Ask about this completed analysis** after a retained
+result is active. The local `qwen3:8b` model selects only a constrained
+follow-up intent; GeoLens renders the answer deterministically from the saved
+record. Questions about unsupported counts, causes, vegetation cover, trees,
+ambiguous intervals or different dates cannot create findings. If Ollama is
+unavailable or its response is rejected, the same evidence-bound renderer uses
+a clearly recorded deterministic fallback. Follow-ups never rerun inference,
+retrieval or NDVI, and threads are keyed to the active analysis ID.
+
+The **Download illustrated PDF report** expander creates a local A4 report on
+explicit request. Infrastructure reports include the original question,
+chronological observations, full input hashes, user-supplied-date warning,
+per-interval images, overlays, captions, class populations, failures and model
+limitations. Vegetation reports include the confirmed area, actual and missing
+observations, true-colour/NDVI previews, difference maps, exact pairwise
+statistics, scaling provenance and interpretation limits. Reports are built
+only from saved outputs; exporting cannot change or rerun an analysis. The PDF
+runtime dependency is included in `requirements.in`.
+
 GeoLens writes every execution to a new ignored directory beneath
 `outputs/geolens/`. Infrastructure timelines use
 `outputs/geolens/construction-timelines/`; their prepared observations and

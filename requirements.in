@@ -5,6 +5,7 @@
 torch==2.14.1
 numpy==2.4.6
 Pillow==13.0.0
+reportlab==4.4.4
 einops==0.8.2
 rasterio==1.4.4
 streamlit==1.66.1

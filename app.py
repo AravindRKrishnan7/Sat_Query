@@ -84,6 +84,11 @@ from satquery.presentation import (  # noqa: E402
     comparison_input_paths,
     compose_before_after_reveal,
 )
+from satquery.reports import (  # noqa: E402
+    ReportBuildError,
+    build_historical_pdf,
+    build_infrastructure_pdf,
+)
 from satquery.vegetation import (  # noqa: E402
     VegetationValidationError,
     load_config,
@@ -242,6 +247,56 @@ def _render_follow_up_chat(context: FollowUpContext) -> None:
             )
         )
         st.rerun()
+
+
+def _render_pdf_export(
+    *,
+    workflow: str,
+    analysis_id: str,
+    record: Mapping[str, Any],
+    original_request: str = "",
+    answer: str = "",
+    area_label: str = "Confirmed map area",
+) -> None:
+    """Create a result-bound illustrated report only after an explicit click."""
+    with st.expander("Download illustrated PDF report"):
+        st.caption(
+            "The report is assembled from this saved execution and its existing images. "
+            "Exporting does not rerun inference, retrieval, scaling, masking, or NDVI."
+        )
+        state = st.session_state.setdefault("pdf_exports", {})
+        state_key = f"{workflow}:{analysis_id}"
+        if st.button("Create PDF report", key=f"create-pdf-{state_key}"):
+            try:
+                if workflow == "infrastructure_timeline":
+                    parent = Path(record["outputs"]["timeline_record"]).parent
+                    report = build_infrastructure_pdf(
+                        record,
+                        parent / "reports" / "geolens-infrastructure-report.pdf",
+                    )
+                elif workflow == "historical_vegetation":
+                    parent = Path(record["outputs"]["execution_record"]).parent
+                    report = build_historical_pdf(
+                        record,
+                        parent / "reports" / "geolens-vegetation-report.pdf",
+                        original_request=original_request,
+                        answer=answer,
+                        area_label=area_label,
+                    )
+                else:
+                    raise ReportBuildError(f"unsupported report workflow: {workflow}")
+                state[state_key] = str(report)
+                st.success("Illustrated report created from the active saved result.")
+            except (OSError, ReportBuildError, ValueError) as exc:
+                st.error(f"PDF report could not be created: {exc}")
+        report_value = state.get(state_key)
+        if report_value and Path(report_value).is_file():
+            _download(
+                Path(report_value),
+                "Download illustrated PDF",
+                "application/pdf",
+                f"download-pdf-{state_key}",
+            )
 
 
 def _show_construction_result(
@@ -770,6 +825,12 @@ def _show_infrastructure_timeline(record: Mapping[str, Any]) -> None:
             base_answer=answer_path.read_text(encoding="utf-8"),
             selected_comparison_id=selected_id,
         )
+    )
+    infrastructure_analysis_id = Path(record["outputs"]["timeline_record"]).parent.name
+    _render_pdf_export(
+        workflow="infrastructure_timeline",
+        analysis_id=infrastructure_analysis_id,
+        record=record,
     )
 
 
@@ -1303,6 +1364,37 @@ def _show_historical_result(
             ),
             selected_comparison_id=selected_difference["label"],
         )
+    )
+    historical_analysis_id = Path(record["outputs"]["execution_record"]).parent.name
+    original_request = (
+        str(assistant_execution.get("original_request", ""))
+        if assistant_execution
+        else (
+            f"Compare vegetation from {record['request']['start_year']} "
+            f"to {record['request']['end_year']}."
+        )
+    )
+    answer_text = (
+        str(answer.get("text", ""))
+        if answer
+        else summary_path.read_text(encoding="utf-8")
+    )
+    resolved_context = (
+        assistant_execution.get("resolved_request_context", {})
+        if assistant_execution
+        else {}
+    )
+    area_label = str(
+        resolved_context.get("label")
+        or st.session_state.get("historical_aoi_label", "Confirmed map area")
+    )
+    _render_pdf_export(
+        workflow="historical_vegetation",
+        analysis_id=historical_analysis_id,
+        record=record,
+        original_request=original_request,
+        answer=answer_text,
+        area_label=area_label,
     )
     with st.expander("View evidence and technical details"):
         if answer and answer.get("fallback_used"):
