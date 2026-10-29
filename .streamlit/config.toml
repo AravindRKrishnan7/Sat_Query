@@ -8,3 +8,32 @@ enableXsrfProtection = true
 
 [browser]
 gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#0F766E"
+backgroundColor = "#F8FAFC"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#172033"
+grayTextColor = "#475569"
+linkColor = "#0F766E"
+borderColor = "#CBD5E1"
+baseRadius = "0.625rem"
+buttonRadius = "0.5rem"
+showWidgetBorder = true
+showSidebarBorder = true
+paddingTop = "1.5rem"
+paddingBottom = "4rem"
+
+[theme.sidebar]
+primaryColor = "#0F766E"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8FAFC"
+textColor = "#172033"
+grayTextColor = "#475569"
+linkColor = "#0F766E"
+borderColor = "#CBD5E1"
+baseRadius = "0.625rem"
+buttonRadius = "0.5rem"
+showWidgetBorder = true
+paddingTop = "1.5rem"

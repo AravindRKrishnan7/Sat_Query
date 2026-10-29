@@ -49,6 +49,15 @@ Open [http://127.0.0.1:8501](http://127.0.0.1:8501). The server binds only to
 the loopback interface. It does not download model or satellite assets on
 startup.
 
+GeoLens uses a native Streamlit light theme defined in
+`.streamlit/config.toml`: an off-white page, white widget/card surfaces, dark
+navy text, muted gray supporting text, teal actions and visible gray borders.
+The sidebar uses the same light palette. App-level CSS is intentionally limited
+to the GeoLens header, step labels and stable outer result containers; it does
+not force colours on nested selectboxes, uploaders, radios, forms, tabs,
+buttons, downloads or chat controls. This keeps normal, hover, focus and
+disabled states under Streamlit's accessible theme system.
+
 **Buildings and infrastructure** requires a natural-language question and two
 to four PNG/JPEG observations. Every image requires a user-supplied ISO
 acquisition date; GeoLens rejects missing or duplicate dates, sorts the images

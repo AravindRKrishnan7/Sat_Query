@@ -134,62 +134,50 @@ def _download(path: Path, label: str, mime: str, key: str) -> None:
 
 
 def _inject_geolens_theme() -> None:
-    """Apply a small stable theme layer without targeting generated DOM positions."""
+    """Style only GeoLens-owned elements and stable outer presentation containers."""
     st.markdown(
         """
         <style>
         :root {
-          --gl-navy: #0b1f33;
-          --gl-navy-soft: #12304a;
+          --gl-text: #172033;
+          --gl-muted: #475569;
           --gl-teal: #0f766e;
-          --gl-teal-bright: #2dd4bf;
-          --gl-paper: #f7fafc;
-          --gl-muted: #64748b;
-          --gl-line: #dbe5ec;
-        }
-        .stApp { background: var(--gl-paper); color: var(--gl-navy); }
-        [data-testid="stSidebar"] { background: var(--gl-navy); }
-        [data-testid="stSidebar"] * { color: #edf7f7; }
-        [data-testid="stSidebar"] [data-baseweb="radio"] label {
-          border-radius: 0.55rem; padding: 0.2rem 0.45rem;
-        }
-        [data-testid="stSidebar"] [aria-checked="true"] {
-          background: rgba(45, 212, 191, 0.16);
+          --gl-card: #ffffff;
+          --gl-line: #cbd5e1;
         }
         [data-testid="stMainBlockContainer"] {
-          max-width: 1180px; padding-top: 1.4rem; padding-bottom: 4rem;
+          max-width: 1180px;
         }
-        [data-testid="stAlert"] { border-radius: 0.65rem; }
         [data-testid="stExpander"] {
-          border: 1px solid var(--gl-line); border-radius: 0.65rem;
-          background: rgba(255,255,255,0.72);
+          background: var(--gl-card);
         }
         [data-testid="stChatMessage"] {
-          border: 1px solid var(--gl-line); border-radius: 0.75rem;
-          background: #ffffff;
-        }
-        .stButton > button[kind="primary"] {
-          background: var(--gl-teal); border-color: var(--gl-teal);
-          font-weight: 650;
-        }
-        .stButton > button[kind="primary"]:hover {
-          background: #115e59; border-color: #115e59;
+          border: 1px solid var(--gl-line);
+          background: var(--gl-card);
         }
         .geolens-hero {
           display: flex; align-items: center; gap: 0.9rem;
-          padding: 0.2rem 0 1.15rem; border-bottom: 1px solid var(--gl-line);
-          margin-bottom: 1.25rem;
+          padding: 0.9rem 1rem; border: 1px solid var(--gl-line);
+          border-radius: 0.75rem; background: var(--gl-card);
+          margin-bottom: 1.35rem;
         }
         .geolens-mark {
           width: 2.45rem; height: 2.45rem; border-radius: 0.72rem;
           display: grid; place-items: center; color: white; font-weight: 800;
-          background: linear-gradient(145deg, var(--gl-navy-soft), var(--gl-teal));
+          background: var(--gl-teal); flex: 0 0 auto;
         }
-        .geolens-hero h1 { font-size: 1.55rem; line-height: 1.2; margin: 0; }
+        .geolens-hero h1 {
+          color: var(--gl-text); font-size: 1.55rem; line-height: 1.2; margin: 0;
+        }
         .geolens-hero p { color: var(--gl-muted); margin: 0.15rem 0 0; }
         .geolens-step {
           color: var(--gl-teal); font-size: 0.78rem; font-weight: 750;
           letter-spacing: 0.06em; text-transform: uppercase; margin-top: 1rem;
+        }
+        @media (max-width: 640px) {
+          .geolens-hero { align-items: flex-start; padding: 0.8rem; }
+          .geolens-hero h1 { font-size: 1.35rem; }
+          .geolens-hero p { font-size: 0.9rem; line-height: 1.4; }
         }
         </style>
         """,

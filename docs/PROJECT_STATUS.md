@@ -10,6 +10,36 @@ AI model for its calculations. A separate local language-model layer interprets
 requests and selects validated result statements without changing either
 analysis path.
 
+## Streamlit light-theme contrast audit
+
+The conflicting mixed theme has been removed. In particular, the former
+`[data-testid="stSidebar"] *` rule forced light text onto every nested sidebar
+surface while selectboxes, radio controls and other widgets retained light
+backgrounds. Primary-button and app-wide text colours were also overridden in
+CSS instead of being coordinated through Streamlit's state-aware theme.
+
+`.streamlit/config.toml` now defines one professional light palette for the
+main area and sidebar: page `#F8FAFC`, interactive/card surface `#FFFFFF`, text
+`#172033`, teal primary `#0F766E`, and border `#CBD5E1`. Widget borders and the
+sidebar separator are explicitly enabled. Streamlit owns selectbox, label,
+radio, uploader, button, tab, form, sidebar, help, alert, download, focus,
+hover and disabled colours. The remaining injected CSS uses only GeoLens-owned
+header/step classes plus stable outer container IDs for width, expanders and
+chat-message cards. A narrow-screen media rule only adjusts the custom header.
+
+Four focused tests validate the exact native palette, complete sidebar palette,
+WCAG AA contrast for primary/supporting text and white-on-teal actions, and the
+absence of broad sidebar, BaseWeb, button or app-wide colour selectors. The
+full suite passes 105 tests. Streamlit's integration harness verifies both
+workflow choices, the historical default/preset lifecycle, infrastructure
+uploader and controls, and unchanged state behavior.
+
+The loopback server was restarted with the new configuration and its health
+endpoint passed. No browser-control instance was connected, so desktop and
+narrow-viewport screenshots plus rendered hover-state inspection are not
+claimed. Native theme validation and integration testing are reported
+separately from visible-browser QA.
+
 ## Result exploration, grounded follow-ups and PDF export
 
 The main GeoLens views now use a scoped navy/teal presentation layer, clearer
