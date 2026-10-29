@@ -26,7 +26,13 @@ from satquery.historical import (
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3:8b"
 MAX_REQUEST_CHARACTERS = 2_000
-ANALYSES = ("vegetation", "construction", "roads")
+ANALYSES = (
+    "vegetation",
+    "vegetation_cover",
+    "tree_count",
+    "construction",
+    "roads",
+)
 MISSING_FIELDS = (
     "analysis",
     "start_year",
@@ -306,9 +312,13 @@ INTERPRETATION_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
     "properties": {
         "vegetation_requested": {"type": "boolean"},
+        "vegetation_cover_requested": {"type": "boolean"},
+        "tree_count_requested": {"type": "boolean"},
         "construction_requested": {"type": "boolean"},
         "roads_requested": {"type": "boolean"},
         "vegetation_evidence": {"type": ["string", "null"]},
+        "vegetation_cover_evidence": {"type": ["string", "null"]},
+        "tree_count_evidence": {"type": ["string", "null"]},
         "construction_evidence": {"type": ["string", "null"]},
         "roads_evidence": {"type": ["string", "null"]},
         "start_year": {"type": ["integer", "null"]},
@@ -319,9 +329,13 @@ INTERPRETATION_SCHEMA: dict[str, Any] = {
     },
     "required": [
         "vegetation_requested",
+        "vegetation_cover_requested",
+        "tree_count_requested",
         "construction_requested",
         "roads_requested",
         "vegetation_evidence",
+        "vegetation_cover_evidence",
+        "tree_count_evidence",
         "construction_evidence",
         "roads_evidence",
         "start_year",
@@ -339,6 +353,8 @@ def _validate_interpretation_payload(value: Mapping[str, Any]) -> None:
         raise LanguageModelValidationError("interpretation has missing or unexpected fields")
     for name in (
         "vegetation_requested",
+        "vegetation_cover_requested",
+        "tree_count_requested",
         "construction_requested",
         "roads_requested",
         "uses_confirmed_boundary",
@@ -351,6 +367,8 @@ def _validate_interpretation_payload(value: Mapping[str, Any]) -> None:
             raise LanguageModelValidationError(f"interpretation field {name!r} is not an integer or null")
     for name in (
         "vegetation_evidence",
+        "vegetation_cover_evidence",
+        "tree_count_evidence",
         "construction_evidence",
         "roads_evidence",
         "boundary_evidence",
@@ -373,16 +391,23 @@ def interpret_request(
         )
     system = (
         "Extract a GeoLens request literally. Set an analysis boolean true only when the user "
-        "explicitly asks for it or an unambiguous synonym. Do not infer construction or roads "
-        "from vegetation. The words here, this area, selected area, current area, or map boundary "
+        "explicitly asks for it or an unambiguous synonym. Treat infrastructure as BOTH construction "
+        "(buildings) and roads, using the exact word infrastructure as evidence for both. Treat "
+        "buildings as construction. Keep vegetation greenness/NDVI, vegetation cover/extent, and "
+        "individual-tree counts distinct: generic vegetation, greenness, or NDVI means "
+        "vegetation_requested; vegetation cover, vegetation extent, or land-cover area means only "
+        "vegetation_cover_requested unless greenness is also explicit; count trees, tree count, or "
+        "individual trees means tree_count_requested. Do not infer any of these from another. "
+        "The words here, this area, selected area, current area, or map boundary "
         "mean uses_confirmed_boundary=true. For every true analysis and boundary boolean, return the "
         "shortest exact supporting quote from the user in its evidence field. Evidence must be null "
         "when its boolean is false. named_location must be the shortest exact geographic place name "
         "explicitly requested by the user, or null when no different/named place is written. Words "
         "like here and this area are not named locations. Never invent years or coordinates. "
-        "Examples: 'vegetation here from 2021 to 2025' means vegetation true, construction false, "
-        "roads false. 'construction and roads here from 2020 to 2022' means vegetation false, "
-        "construction true, roads true. Return only the required schema."
+        "Examples: 'vegetation here from 2021 to 2025' means vegetation true and cover/tree false. "
+        "'infrastructure from 2023 to 2025' means construction true and roads true. "
+        "'vegetation cover and tree count' means cover true and tree count true, not greenness. "
+        "Return only the required schema."
     )
     value, runtime = provider.structured_chat(
         (
@@ -390,13 +415,15 @@ def interpret_request(
             {"role": "user", "content": text},
         ),
         INTERPRETATION_SCHEMA,
-        max_tokens=192,
+        max_tokens=320,
     )
     _validate_interpretation_payload(value)
     folded_text = text.casefold()
     evidence: dict[str, str | None] = {}
     for analysis, boolean_field, evidence_field in (
         ("vegetation", "vegetation_requested", "vegetation_evidence"),
+        ("vegetation_cover", "vegetation_cover_requested", "vegetation_cover_evidence"),
+        ("tree_count", "tree_count_requested", "tree_count_evidence"),
         ("construction", "construction_requested", "construction_evidence"),
         ("roads", "roads_requested", "roads_evidence"),
     ):
@@ -445,6 +472,8 @@ def interpret_request(
         name
         for name, field in (
             ("vegetation", "vegetation_requested"),
+            ("vegetation_cover", "vegetation_cover_requested"),
+            ("tree_count", "tree_count_requested"),
             ("construction", "construction_requested"),
             ("roads", "roads_requested"),
         )
@@ -505,6 +534,71 @@ def resolve_boundary_context(
     )
 
 
+def _unsupported_analysis_details(analysis: str) -> tuple[str, str, str]:
+    if analysis == "construction":
+        return (
+            "construction_changes",
+            "building_change",
+            "Building-change analysis cannot run for this confirmed historical area and period: "
+            "no suitably dated, aligned high-resolution RGB pair is configured. The available "
+            "10 m Sentinel-2 observations cannot validate individual buildings. MCI can localise "
+            "class-change pixels on a suitable image pair, but it does not count or temporally "
+            "match building instances.",
+        )
+    if analysis == "roads":
+        return (
+            "construction_changes",
+            "road_change",
+            "Road-change analysis cannot run for this confirmed historical area and period: no "
+            "suitably dated, aligned high-resolution RGB pair is configured. The available 10 m "
+            "Sentinel-2 observations are not sent to MCI, and a road-change mask would not by itself "
+            "prove that a new road was constructed.",
+        )
+    if analysis == "vegetation_cover":
+        return (
+            "historical_vegetation_cover",
+            "vegetation_cover",
+            "Vegetation-cover analysis cannot run because GeoLens has no locally validated "
+            "land-cover classifier and transition policy for this area. NDVI greenness is not "
+            "substituted for cover, and Sentinel-2 SCL quality classes are not treated as a "
+            "validated vegetation-extent map.",
+        )
+    if analysis == "tree_count":
+        return (
+            "historical_tree_count",
+            "individual_tree_count",
+            "Individual-tree counting cannot run because no suitably resolved, dated imagery and "
+            "locally evaluated tree detector are configured for this area. NDVI and green pixels "
+            "do not provide tree counts.",
+        )
+    raise LanguageModelValidationError(f"unsupported requested analysis: {analysis}")
+
+
+def _unavailable_observation(
+    analysis: str,
+    interpretation: InterpretedRequest,
+    reason: str,
+) -> dict[str, Any]:
+    _tool, change_type, _default_reason = _unsupported_analysis_details(analysis)
+    years = [
+        year
+        for year in (interpretation.start_year, interpretation.end_year)
+        if year is not None
+    ]
+    return {
+        "change_type": change_type,
+        "requested_years": years,
+        "actual_dates": [],
+        "count": None,
+        "area_square_metres": None,
+        "spatial_location": None,
+        "evidence_image_refs": [],
+        "method": None,
+        "status": "not_run",
+        "limitations": [reason],
+    }
+
+
 def build_tool_plan(
     interpretation: InterpretedRequest,
     aoi: ConfirmedAOI | None,
@@ -548,6 +642,13 @@ def build_tool_plan(
                     "analysis": analysis,
                     "status": "ready",
                     "validated_arguments": historical_request.record(),
+                    "observation_contract": {
+                        "change_type": "vegetation_greenness_ndvi",
+                        "count": None,
+                        "area_square_metres": None,
+                        "spatial_location": None,
+                        "method": "Sentinel-2 Level-2A NDVI difference on validated common pixels",
+                    },
                 })
             except HistoricalValidationError as exc:
                 errors.append(str(exc))
@@ -559,16 +660,25 @@ def build_tool_plan(
                     "validated_arguments": None,
                 })
         else:
+            tool_name, _change_type, reason = _unsupported_analysis_details(analysis)
+            if boundary_resolution.missing_information:
+                reason = (
+                    "Clarification required: "
+                    + ", ".join(boundary_resolution.missing_information)
+                    + ". "
+                    + reason
+                )
             tools.append({
-                "tool": "construction_changes",
+                "tool": tool_name,
                 "analysis": analysis,
                 "status": "unsupported_in_historical_mode",
-                "reason": (
-                    f"{analysis.title()} analysis requires suitable aligned before/after 256×256 RGB "
-                    "imagery and explicit confirmation in Construction changes mode. The confirmed "
-                    "Sentinel-2 map boundary is not silently sent to the MCI model."
-                ),
+                "reason": reason,
                 "validated_arguments": None,
+                "structured_observation": _unavailable_observation(
+                    analysis,
+                    interpretation,
+                    reason,
+                ),
             })
     if not tools:
         errors.append("no analysis was identified")
@@ -590,10 +700,74 @@ def build_tool_plan(
     )
 
 
+def summarize_tool_plan(plan: ToolPlan) -> str:
+    """Render a short deterministic explanation of a validated plan."""
+    labels = {
+        "vegetation": "vegetation greenness (NDVI)",
+        "vegetation_cover": "vegetation cover",
+        "tree_count": "individual-tree counts",
+        "construction": "building changes",
+        "roads": "road changes",
+    }
+    requested = ", ".join(labels[item] for item in plan.interpretation.analyses) or "no analysis"
+    years = [plan.interpretation.start_year, plan.interpretation.end_year]
+    period = (
+        f"{years[0]}–{years[1]}"
+        if all(year is not None for year in years)
+        else "an unresolved period"
+    )
+    area = plan.boundary_resolution.label or "an unconfirmed area"
+    opening = f"GeoLens understood the request as {requested} for {period}, using {area}."
+    ready = [tool for tool in plan.tools if tool.get("status") == "ready"]
+    unavailable = [tool for tool in plan.tools if tool.get("status") != "ready"]
+    paragraphs = [opening]
+    if ready:
+        paragraphs.append(
+            "The supported vegetation-greenness tool can run after you review the plan and choose Run."
+        )
+    if unavailable:
+        paragraphs.extend(str(tool.get("reason")) for tool in unavailable)
+    return "\n\n".join(paragraphs)
+
+
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def structured_historical_observations(result: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Describe only supported NDVI comparisons using a stable observation contract."""
+    observations: list[dict[str, Any]] = []
+    limitations = [
+        "NDVI is a vegetation-greenness indicator, not vegetation cover, plant health, tree count, or cause."
+    ]
+    for item in result.get("adjacent_differences", []):
+        if not isinstance(item, Mapping) or item.get("status") != "available":
+            continue
+        outputs = item.get("outputs")
+        difference_path = outputs.get("difference_png") if isinstance(outputs, Mapping) else None
+        observations.append({
+            "change_type": "vegetation_greenness_ndvi",
+            "comparison": item.get("label"),
+            "requested_years": [item.get("before_year"), item.get("after_year")],
+            "actual_dates": [item.get("before_date"), item.get("after_date")],
+            "count": None,
+            "area_square_metres": None,
+            "spatial_location": None,
+            "evidence_image_refs": [difference_path] if difference_path else [],
+            "method": "Sentinel-2 Level-2A NDVI difference on pixels valid on both dates",
+            "status": "available",
+            "metrics": {
+                "mean_ndvi_difference": item.get("mean"),
+                "valid_pixels": item.get("valid_pixels"),
+                "valid_coverage": item.get("valid_coverage"),
+                "threshold": item.get("threshold"),
+                "categories": item.get("categories"),
+            },
+            "limitations": limitations,
+        })
+    return observations
 
 
 def execute_tool_plan(
@@ -619,6 +793,9 @@ def execute_tool_plan(
                 "status": "not_run",
                 "reason": tool.get("reason"),
                 "result_references": None,
+                "structured_observations": [tool["structured_observation"]]
+                if tool.get("structured_observation")
+                else [],
             })
             executions.append(execution)
             continue
@@ -632,6 +809,7 @@ def execute_tool_plan(
             continue
         try:
             historical_result = runner(plan.historical_request, historical_output_root, cache_root)
+            observations = structured_historical_observations(historical_result)
             execution.update({
                 "status": "success",
                 "result_references": {
@@ -640,12 +818,26 @@ def execute_tool_plan(
                     "available_years": historical_result.get("available_years"),
                     "missing_years": historical_result.get("missing_years"),
                 },
+                "structured_observations": observations,
             })
         except Exception as exc:  # The audit record must survive a bounded tool failure.
+            error = f"{type(exc).__name__}: {exc}"
             execution.update({
                 "status": "failed",
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": error,
                 "result_references": None,
+                "structured_observations": [{
+                    "change_type": "vegetation_greenness_ndvi",
+                    "requested_years": list(plan.historical_request.years),
+                    "actual_dates": [],
+                    "count": None,
+                    "area_square_metres": None,
+                    "spatial_location": None,
+                    "evidence_image_refs": [],
+                    "method": "Sentinel-2 Level-2A NDVI comparison",
+                    "status": "failed",
+                    "limitations": [error],
+                }],
             })
         executions.append(execution)
     successful = any(item["status"] == "success" for item in executions)
@@ -672,6 +864,11 @@ def execute_tool_plan(
         "resolved_request_context": plan.boundary_resolution.record(),
         "tool_plan": plan.record(),
         "tool_executions": executions,
+        "structured_observations": [
+            observation
+            for execution in executions
+            for observation in execution.get("structured_observations", [])
+        ],
         "final_answer": None,
         "outputs": {"assistant_record": str(record_path.resolve())},
     }
@@ -744,6 +941,7 @@ def compact_historical_result(
             "change_threshold"
         ],
         "execution_issues": _execution_issues(execution_context),
+        "structured_observations": structured_historical_observations(result),
         "limitations": result["limitations"],
         "outputs": result["outputs"],
     }
@@ -866,9 +1064,16 @@ def _render_claim(claim_id: str, compact: Mapping[str, Any]) -> str:
         )
     if claim_id.startswith("execution_issue:"):
         issue = next(value for value in compact["execution_issues"] if value["id"] == claim_id)
-        analysis = str(issue.get("analysis") or "requested").replace("_", " ")
+        labels = {
+            "construction": "building-change",
+            "roads": "road-change",
+            "vegetation_cover": "vegetation-cover",
+            "tree_count": "individual-tree-count",
+        }
+        raw_analysis = str(issue.get("analysis") or "requested")
+        analysis = labels.get(raw_analysis, raw_analysis.replace("_", " "))
         if issue["status"] == "not_run":
-            return f"The requested {analysis} analysis was not run in this historical vegetation workflow."
+            return f"The requested {analysis} analysis was not run. {issue.get('reason')}"
         return f"The requested {analysis} analysis did not complete, so no finding is reported for it."
     if claim_id == "limitation:ndvi":
         return (

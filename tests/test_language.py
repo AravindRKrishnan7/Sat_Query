@@ -26,6 +26,8 @@ from satquery.language import (  # noqa: E402
     execute_tool_plan,
     generate_supported_answer,
     interpret_request,
+    structured_historical_observations,
+    summarize_tool_plan,
     supported_facts,
 )
 
@@ -50,20 +52,33 @@ class FakeProvider:
 def interpretation_payload(
     *,
     vegetation: bool = False,
+    vegetation_cover: bool = False,
+    tree_count: bool = False,
     construction: bool = False,
     roads: bool = False,
     start_year=2021,
     end_year=2025,
     boundary: bool = True,
     named_location: str | None = None,
+    vegetation_evidence: str | None = None,
+    vegetation_cover_evidence: str | None = None,
+    tree_count_evidence: str | None = None,
+    construction_evidence: str | None = None,
+    roads_evidence: str | None = None,
 ) -> dict:
     return {
         "vegetation_requested": vegetation,
+        "vegetation_cover_requested": vegetation_cover,
+        "tree_count_requested": tree_count,
         "construction_requested": construction,
         "roads_requested": roads,
-        "vegetation_evidence": "vegetation" if vegetation else None,
-        "construction_evidence": "construction" if construction else None,
-        "roads_evidence": "roads" if roads else None,
+        "vegetation_evidence": (vegetation_evidence or "vegetation") if vegetation else None,
+        "vegetation_cover_evidence": (
+            vegetation_cover_evidence or "vegetation cover"
+        ) if vegetation_cover else None,
+        "tree_count_evidence": (tree_count_evidence or "tree count") if tree_count else None,
+        "construction_evidence": (construction_evidence or "construction") if construction else None,
+        "roads_evidence": (roads_evidence or "roads") if roads else None,
         "start_year": start_year,
         "end_year": end_year,
         "uses_confirmed_boundary": boundary,
@@ -365,6 +380,83 @@ class InterpretationTests(unittest.TestCase):
             ["unsupported_in_historical_mode", "unsupported_in_historical_mode"],
         )
 
+    def test_infrastructure_resolves_to_buildings_and_roads_with_dates_and_aoi(self) -> None:
+        provider = FakeProvider(interpretation_payload(
+            construction=True,
+            roads=True,
+            start_year=2023,
+            end_year=2025,
+            boundary=False,
+            construction_evidence="infrastructure",
+            roads_evidence="infrastructure",
+        ))
+        interpreted = interpret_request(
+            provider,
+            "Compare infrastructure changes between 2023 and 2025.",
+        )
+        plan = build_tool_plan(
+            interpreted,
+            confirm_aoi(DEMO_BOUNDS),
+            current_year=2026,
+            active_boundary_source="demo_preset",
+            active_boundary_label=DEMO_AOI_LABEL,
+        )
+        self.assertEqual(("construction", "roads"), interpreted.analyses)
+        self.assertEqual((2023, 2025), (interpreted.start_year, interpreted.end_year))
+        self.assertEqual("application_state", plan.boundary_resolution.source)
+        self.assertEqual(DEMO_BOUNDS, plan.boundary_resolution.bounds_wgs84)
+        self.assertEqual("blocked", plan.status)
+        self.assertFalse(plan.runnable)
+        observations = [tool["structured_observation"] for tool in plan.tools]
+        self.assertEqual(["building_change", "road_change"], [item["change_type"] for item in observations])
+        self.assertTrue(all(item["requested_years"] == [2023, 2025] for item in observations))
+        self.assertTrue(all(item["actual_dates"] == [] for item in observations))
+        self.assertTrue(all(item["count"] is None for item in observations))
+        summary = summarize_tool_plan(plan)
+        self.assertIn("building changes, road changes", summary)
+        self.assertIn("2023–2025", summary)
+        self.assertIn(DEMO_AOI_LABEL, summary)
+        self.assertIn("no suitably dated, aligned high-resolution RGB pair", summary)
+
+    def test_buildings_and_roads_are_preserved_as_separate_intents(self) -> None:
+        provider = FakeProvider(interpretation_payload(
+            construction=True,
+            roads=True,
+            construction_evidence="buildings",
+            roads_evidence="roads",
+        ))
+        interpreted = interpret_request(
+            provider,
+            "Compare buildings and roads here from 2021 to 2025.",
+        )
+        self.assertEqual(("construction", "roads"), interpreted.analyses)
+
+    def test_vegetation_cover_greenness_and_tree_counts_are_distinct(self) -> None:
+        cover = interpret_request(
+            FakeProvider(interpretation_payload(vegetation_cover=True)),
+            "Compare vegetation cover here from 2021 to 2025.",
+        )
+        self.assertEqual(("vegetation_cover",), cover.analyses)
+        cover_plan = build_tool_plan(cover, confirm_aoi(DEMO_BOUNDS), current_year=2026)
+        self.assertFalse(cover_plan.runnable)
+        self.assertIn("NDVI greenness is not substituted for cover", cover_plan.tools[0]["reason"])
+
+        trees = interpret_request(
+            FakeProvider(interpretation_payload(tree_count=True)),
+            "Compare tree count here from 2021 to 2025.",
+        )
+        self.assertEqual(("tree_count",), trees.analyses)
+        tree_plan = build_tool_plan(trees, confirm_aoi(DEMO_BOUNDS), current_year=2026)
+        self.assertFalse(tree_plan.runnable)
+        self.assertIn("NDVI and green pixels do not provide tree counts", tree_plan.tools[0]["reason"])
+
+        greenness = interpret_request(
+            FakeProvider(interpretation_payload(vegetation=True)),
+            "Compare vegetation here from 2021 to 2025.",
+        )
+        self.assertEqual(("vegetation",), greenness.analyses)
+        self.assertTrue(build_tool_plan(greenness, confirm_aoi(DEMO_BOUNDS), current_year=2026).runnable)
+
     def test_combined_request_retains_partial_support(self) -> None:
         provider = FakeProvider(interpretation_payload(vegetation=True, construction=True))
         interpreted = interpret_request(
@@ -427,6 +519,50 @@ class ToolExecutionTests(unittest.TestCase):
             self.assertIn("fixture failure", record["tool_executions"][0]["error"])
             saved = json.loads(Path(record["outputs"]["assistant_record"]).read_text())
             self.assertEqual(saved["original_request"], interpreted.original_request)
+
+    def test_not_run_infrastructure_writes_auditable_empty_observations(self) -> None:
+        interpreted = interpret_request(
+            FakeProvider(interpretation_payload(
+                construction=True,
+                roads=True,
+                start_year=2023,
+                end_year=2025,
+                boundary=False,
+                construction_evidence="infrastructure",
+                roads_evidence="infrastructure",
+            )),
+            "Compare infrastructure changes between 2023 and 2025.",
+        )
+        plan = build_tool_plan(interpreted, confirm_aoi(DEMO_BOUNDS), current_year=2026)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            record, result = execute_tool_plan(
+                plan,
+                root / "assistant",
+                root / "historical",
+                root / "cache",
+            )
+        self.assertIsNone(result)
+        self.assertEqual("not_run", record["status"])
+        self.assertEqual(2, len(record["structured_observations"]))
+        self.assertEqual(
+            {"building_change", "road_change"},
+            {item["change_type"] for item in record["structured_observations"]},
+        )
+        self.assertTrue(all(item["actual_dates"] == [] for item in record["structured_observations"]))
+        self.assertTrue(all(item["evidence_image_refs"] == [] for item in record["structured_observations"]))
+
+    def test_supported_ndvi_observations_keep_counts_area_and_locations_unclaimed(self) -> None:
+        observations = structured_historical_observations(complete_result_fixture())
+        self.assertEqual(2, len(observations))
+        self.assertEqual(
+            ["2021-02-07", "2022-02-12"],
+            observations[0]["actual_dates"],
+        )
+        self.assertIsNone(observations[0]["count"])
+        self.assertIsNone(observations[0]["area_square_metres"])
+        self.assertIsNone(observations[0]["spatial_location"])
+        self.assertEqual("vegetation_greenness_ndvi", observations[0]["change_type"])
 
 
 class SupportedAnswerTests(unittest.TestCase):
@@ -491,7 +627,7 @@ class SupportedAnswerTests(unittest.TestCase):
             complete_result_fixture(),
             execution,
         )
-        self.assertIn("construction analysis was not run", answer["text"])
+        self.assertIn("building-change analysis was not run", answer["text"])
         self.assertNotIn("construction change was found", answer["text"])
 
     def test_invented_numbers_or_dates_reject_answer_plan(self) -> None:

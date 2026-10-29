@@ -8,6 +8,106 @@ uses an AI model for its calculations. A separate local language-model layer
 now interprets requests and selects validated result statements without
 changing either analysis path.
 
+## Infrastructure demo feasibility and typed observations
+
+### Exact 2023–2025 Alappuzha result: blocked by source imagery
+
+The exact request `Compare infrastructure changes between 2023 and 2025.` is
+not currently executable as an evidence-backed infrastructure analysis. The
+confirmed Alappuzha AOI is retained, but no correctly dated, aligned,
+appropriately licensed high-resolution 2023/2025 pair for those exact bounds is
+available locally or through the checked open sources.
+
+Local imagery inventory:
+
+- the Alappuzha cache contains Sentinel-2 Collection-1 Level-2A observations
+  acquired 2023-01-08 and 2025-01-17 on a 10 m grid. These are valid for the
+  existing NDVI workflow, not for resolving or counting individual buildings,
+  roads, or trees;
+- `data/input/before.png` and `after.png` are ungeoreferenced 1254 × 1254 RGB
+  files with no acquisition dates or AOI identity. They cannot establish
+  Alappuzha provenance or a 2023/2025 interval;
+- the pinned RSICC examples are 256 × 256 LEVIR-derived academic samples, not
+  Alappuzha. The upstream preparation notes no explicit redistribution licence,
+  and the source files contain neither exact acquisition dates nor geospatial
+  metadata. They are not relabelled as 2023/2025.
+
+Authoritative source investigation:
+
+- the public Maxar Open Data bucket and event metadata were queried without
+  downloading imagery. It is an event-activation collection under CC BY-NC
+  4.0. The only 2023 India activation is **North India Floods**, covering the
+  Sikkim/Teesta event; no Alappuzha activation or corresponding 2025 pair is
+  listed;
+- Planet NICFI tropical basemaps are 4.77 m mosaics under a custom
+  non-commercial, forest-monitoring-purpose licence. Access requires a Planet
+  account/EULA, they are month mosaics rather than single acquisition dates,
+  and the programme stopped adding monthly basemaps after December 2024. They
+  therefore provide neither the requested 2025 pair nor suitable evidence for
+  validated individual-building counts;
+- commercial Maxar/Planet archive imagery may exist, but ordering requires an
+  account/plan and potentially paid access. No paid search, order or download
+  was made.
+
+No infrastructure finding is reported. In particular there is no supported
+building count, net count change, new/removed-building count, road-construction
+claim, spatial location, or evidence mask for Alappuzha in 2023–2025.
+
+### Implemented request and observation contract
+
+The local `qwen3:8b` interpretation schema now keeps five intents distinct:
+vegetation greenness (the existing NDVI tool), vegetation cover, individual
+tree count, building/construction change, and road change. The exact word
+`infrastructure` resolves to both building and road intents. `buildings and
+roads` is handled identically. Dates and the confirmed AOI still pass through
+the deterministic source-evidence, application-state and date validators.
+
+The exact infrastructure question was exercised through Streamlit's real-model
+integration harness. It produced:
+
+- analyses `construction` and `roads`;
+- requested years 2023 and 2025;
+- boundary source `application_state`, label `Alappuzha demo area`, and bounds
+  `[76.34, 9.48, 76.36, 9.5]`;
+- a blocked plan with no Run button and no model execution;
+- two structured `not_run` observations (`building_change` and `road_change`)
+  with empty actual dates and evidence references, null count/area/location,
+  and the verified imagery/method limitation.
+
+Successful NDVI executions now also expose structured observations with change
+type, actual dates, evidence-map references, method, pair-valid population,
+threshold/categories and limitations. Count, vegetation-cover area and spatial
+location remain null because the current NDVI tool does not compute them.
+Combined requests still run eligible NDVI tools and retain separate not-run
+observations for unsupported intents. Deterministic summaries explain the
+validated plan in plain language; unsupported intent is never rewritten as an
+NDVI result.
+
+### Separate annotated demonstration proposal
+
+If a building-count and temporal-matching demonstration is required before a
+suitable Alappuzha pair is licensed, use a clearly labelled **SpaceNet 7
+benchmark AOI**, for example training AOI
+`L15-0760E-0887N_3041_4643_13`. Do not label its monthly 2017–2020 Planet Dove
+mosaics as Alappuzha or 2023/2025. SpaceNet 7 provides about 4 m imagery,
+monthly building-footprint labels and temporal identities under CC BY-SA 4.0;
+its SCOT evaluation covers both object tracking and change detection.
+
+The official SpaceNet 7 baseline/winning code and public weights are the model
+candidates, not an integrated GeoLens capability. Before integration they need
+a bounded sample download, dependency/security review, M4 16 GB inference
+benchmark, evaluation against held-out annotated months, and inspection of
+count and temporal-match errors. The official solutions are Docker/GPU-oriented
+and the full dataset is large, so neither data nor weights were downloaded in
+this task. MCI remains useful only for localisation/captioning on suitable
+aligned 0.5 m-style RGB pairs; its class mask components are not building
+instances.
+
+Primary references: [Maxar Open Data on AWS](https://registry.opendata.aws/maxar-open-data/),
+[Planet NICFI user guide](https://assets.planet.com/docs/NICFI_User_Guide_EN.pdf),
+[SpaceNet 7 challenge and licence](https://spacenet.ai/sn7-challenge/), and
+[SpaceNet 7 winning solutions](https://github.com/SpaceNetChallenge/SpaceNet7_Multi-Temporal_Solutions).
+
 ## Current GeoLens delivery
 
 ### Implemented and verified
@@ -25,7 +125,7 @@ changing either analysis path.
   request is now in a fallback expander. The readable checked answer remains
   above images and charts; raw plans, pixel populations, provider details and
   machine records remain expandable and downloadable.
-- The full lightweight suite passes 60 tests. Three Streamlit interface tests
+- The full lightweight suite passes 65 tests. Three Streamlit interface tests
   verify workflow availability/default selection, one-time demo confirmation,
   unchanged reruns, and reset invalidation. Existing tests continue to cover
   changed-boundary invalidation, combined intent, missing years, unsupported
@@ -115,7 +215,10 @@ accepted as the default.
 The initial `qwen3:8b` missing-date test also invented a year range. GeoLens
 now requires exact source-text evidence for every asserted analysis and map
 reference, and accepts a year only if its exact token occurs in the original
-question. The strengthened five-case real compatibility run passed:
+question. The strengthened ten-case real compatibility run passed. In addition
+to the original cases, it now verifies infrastructure, buildings and roads,
+combined vegetation plus infrastructure, vegetation cover, and individual-tree
+count intent:
 
 - vegetation here from 2021 to 2025 → vegetation only, correct years and
   boundary reference;
@@ -172,12 +275,12 @@ Streamlit reruns do not execute the tool again.
 
 ### Language-interface verification and limitations
 
-- 60 lightweight tests pass. Twenty-two language-interface tests cover unavailable
+- 65 lightweight tests pass. Twenty-seven language-interface tests cover unavailable
   service, missing/invented dates, unconfirmed AOI, unsupported construction
   and roads, combined partial planning/execution, preset/application-state AOI
   resolution, conflicting places, boundary invalidation, tool failure, missing
   numerical fact references and accepted deterministic fact rendering.
-- The real five-case `scripts/check_llm.py` compatibility test passed with
+- The real ten-case `scripts/check_llm.py` compatibility test passed with
   `qwen3:8b`.
 - Streamlit's integration harness completed the real natural-language request,
   plan review, explicit tool execution, maps/charts, non-fallback answer and 14
@@ -406,8 +509,8 @@ cause.
 
 ### Historical verification and limitations
 
-- 60 lightweight tests pass: the original construction and two-date
-  vegetation regressions, eleven historical tests, and twenty-two language-interface
+- 65 lightweight tests pass: the original construction and two-date
+  vegetation regressions, eleven historical tests, and twenty-seven language-interface
   tests, plus three focused Streamlit layout/state tests. Historical coverage includes unconfirmed and oversized AOIs,
   stale-state invalidation, invalid dates/request size, unsupported
   construction, scaling representations, cache failure, missing-year
@@ -463,10 +566,10 @@ result-contract errors in user-facing language.
 
 - Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
   only in the project `.venv` and pinned in `requirements.in`.
-- All 60 lightweight tests pass. The nine local-interface tests cover workflow
+- All 65 lightweight tests pass. The nine local-interface tests cover workflow
   selection/default state, one-time demo confirmation and reset invalidation, plus bounded
   PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
-  and execution-record validation; eleven historical and twenty-two language tests
+  and execution-record validation; eleven historical and twenty-seven language tests
   cover the contracts listed above.
 - Streamlit's integration harness rendered all three modes without exceptions
   and ran the construction, two-date vegetation and cached historical

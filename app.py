@@ -62,6 +62,7 @@ from satquery.language import (  # noqa: E402
     execute_tool_plan,
     generate_supported_answer,
     interpret_request,
+    summarize_tool_plan,
 )
 from satquery.vegetation import (  # noqa: E402
     VegetationValidationError,
@@ -881,11 +882,19 @@ def _historical_mode() -> None:
         st.markdown("#### Validated interpretation and tool plan")
         if assistant_plan.boundary_resolution.label:
             st.info(f"Using the {assistant_plan.boundary_resolution.label}")
-        years = (
+        st.markdown(summarize_tool_plan(assistant_plan))
+        years: Any = (
             list(assistant_plan.historical_request.years)
             if assistant_plan.historical_request is not None
             else None
         )
+        if years is None and assistant_plan.interpretation.start_year is not None:
+            years = (
+                f"{assistant_plan.interpretation.start_year}–"
+                f"{assistant_plan.interpretation.end_year}"
+                if assistant_plan.interpretation.end_year is not None
+                else str(assistant_plan.interpretation.start_year)
+            )
         st.write(
             f"Plan status: **{assistant_plan.status.replace('_', ' ')}** · "
             f"Requested: {', '.join(assistant_plan.interpretation.analyses) or 'none'} · "

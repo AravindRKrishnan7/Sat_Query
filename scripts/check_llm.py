@@ -22,6 +22,10 @@ from satquery.historical import DEMO_AOI_LABEL, DEMO_BOUNDS, confirm_aoi  # noqa
 
 CASES = (
     (
+        "Compare infrastructure changes between 2023 and 2025.",
+        {"analyses": ["construction", "roads"], "start_year": 2023, "end_year": 2025, "missing": []},
+    ),
+    (
         "Compare vegetation from 2021 to 2025.",
         {"analyses": ["vegetation"], "start_year": 2021, "end_year": 2025, "missing": []},
     ),
@@ -32,6 +36,27 @@ CASES = (
     (
         "Compare vegetation and construction here from 2022 to 2025.",
         {"analyses": ["vegetation", "construction"], "start_year": 2022, "end_year": 2025, "missing": []},
+    ),
+    (
+        "Compare vegetation and infrastructure here from 2022 to 2025.",
+        {
+            "analyses": ["vegetation", "construction", "roads"],
+            "start_year": 2022,
+            "end_year": 2025,
+            "missing": [],
+        },
+    ),
+    (
+        "Compare buildings and roads here from 2023 to 2025.",
+        {"analyses": ["construction", "roads"], "start_year": 2023, "end_year": 2025, "missing": []},
+    ),
+    (
+        "Compare vegetation cover here from 2023 to 2025.",
+        {"analyses": ["vegetation_cover"], "start_year": 2023, "end_year": 2025, "missing": []},
+    ),
+    (
+        "Count individual trees here from 2023 to 2025.",
+        {"analyses": ["tree_count"], "start_year": 2023, "end_year": 2025, "missing": []},
     ),
     (
         "Compare vegetation here.",

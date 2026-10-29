@@ -194,15 +194,18 @@ export GEOLENS_OLLAMA_URL=http://127.0.0.1:11434
 export GEOLENS_OLLAMA_MODEL=qwen3:8b
 ```
 
-The compatibility command makes five small structured-output calls covering
-vegetation, construction plus roads, a combined request, omitted dates, and a
-conflicting named location. It does not run satellite retrieval. The app only
-probes Ollama's model list on startup; it loads the model after the user
-submits a question.
+The compatibility command makes ten small structured-output calls covering
+infrastructure, buildings plus roads, vegetation greenness, vegetation cover,
+individual-tree counts, combined requests, omitted dates, and a conflicting
+named location. It does not run satellite retrieval. The app only probes
+Ollama's model list on startup; it loads the model after the user submits a
+question.
 
-Interpretation uses a JSON schema with separate vegetation, construction and
-road intents, years, and a reference to the current boundary. Every asserted
-intent and boundary reference must include an exact source-text quotation.
+Interpretation uses a JSON schema with separate vegetation-greenness,
+vegetation-cover, individual-tree-count, construction/building and road
+intents, years, and a reference to the current boundary. “Infrastructure”
+resolves to both building and road intent. Every asserted intent and boundary
+reference must include an exact source-text quotation.
 Extracted years are discarded unless the exact year token occurs in the
 question. The result is then passed through the existing AOI, date-range,
 five-observation and sensor-suitability validators. The model receives no
