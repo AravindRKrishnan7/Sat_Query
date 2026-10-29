@@ -35,6 +35,7 @@ from satquery.geolens import (  # noqa: E402
     save_prepared_pair,
     validate_result_record,
 )
+from satquery.followup import FollowUpContext, answer_follow_up  # noqa: E402
 from satquery.historical import (  # noqa: E402
     DEFAULT_AREA_LIMIT_SQUARE_KM,
     DEMO_AOI_LABEL,
@@ -77,6 +78,11 @@ from satquery.language import (  # noqa: E402
     generate_supported_answer,
     interpret_request,
     summarize_tool_plan,
+)
+from satquery.presentation import (  # noqa: E402
+    PresentationIdentityError,
+    comparison_input_paths,
+    compose_before_after_reveal,
 )
 from satquery.vegetation import (  # noqa: E402
     VegetationValidationError,
@@ -188,6 +194,54 @@ def _inject_geolens_theme() -> None:
 
 def _step(label: str) -> None:
     st.markdown(f'<div class="geolens-step">{label}</div>', unsafe_allow_html=True)
+
+
+def _render_follow_up_chat(context: FollowUpContext) -> None:
+    """Render a result-bound conversation without invoking an analysis engine."""
+    st.subheader("Ask about this completed analysis")
+    st.caption(
+        f"Grounded in analysis `{context.analysis_id}`. Follow-ups use saved evidence only and "
+        "do not rerun inference or satellite retrieval."
+    )
+    threads = st.session_state.setdefault("followup_threads", {})
+    messages = threads.setdefault(context.analysis_id, [])
+    for message in messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+            if message.get("classifier"):
+                st.caption(f"Grounding: {message['classifier']}")
+
+    with st.form(f"followup-form-{context.analysis_id}", clear_on_submit=True):
+        question = st.text_input(
+            "Follow-up question",
+            placeholder="Example: Were any road changes detected?",
+            max_chars=2_000,
+        )
+        submitted = st.form_submit_button("Ask about this result")
+    if submitted:
+        if not question.strip():
+            st.warning("Enter a follow-up question.")
+            return
+        provider_info = _cached_language_provider()
+        provider = OllamaProvider(provider_info) if provider_info.available else None
+        try:
+            response = answer_follow_up(question, context, provider)
+        except LanguageModelError as exc:
+            st.error(f"Follow-up could not be validated: {exc}")
+            return
+        messages.extend(
+            (
+                {"role": "user", "content": question, "analysis_id": context.analysis_id},
+                {
+                    "role": "assistant",
+                    "content": response["answer"],
+                    "analysis_id": context.analysis_id,
+                    "classifier": response["classifier"],
+                    "audit": response,
+                },
+            )
+        )
+        st.rerun()
 
 
 def _show_construction_result(
@@ -561,32 +615,71 @@ def _show_infrastructure_timeline(record: Mapping[str, Any]) -> None:
             st.error(f"Comparison failed: {comparison.get('error', 'unknown error')}")
             continue
 
-        input_columns = st.columns(2)
         before_observation = observation_by_id[comparison["before_observation"]]
         after_observation = observation_by_id[comparison["after_observation"]]
-        input_columns[0].image(
-            before_observation["prepared_file"]["path"],
-            caption=f"Before · {comparison['before_date']}",
-            width="stretch",
-        )
-        input_columns[1].image(
-            after_observation["prepared_file"]["path"],
-            caption=f"After · {comparison['after_date']}",
-            width="stretch",
-        )
+        try:
+            before_path, after_path = comparison_input_paths(record, comparison["id"])
+            divider = st.slider(
+                "Before/after divider",
+                min_value=0,
+                max_value=100,
+                value=50,
+                format="%d%% before",
+                key=f"comparison-divider-{record['request_fingerprint']}-{comparison['id']}",
+                help="Left of the divider shows the before image; right shows the after image.",
+            )
+            reveal = compose_before_after_reveal(before_path, after_path, divider)
+            st.image(
+                reveal,
+                caption=(
+                    f"Before {comparison['before_date']} ← divider → "
+                    f"After {comparison['after_date']}"
+                ),
+                width="stretch",
+            )
+            st.caption(
+                "This display uses the exact prepared inputs for the selected interval. The slider "
+                "does not establish or improve their alignment."
+            )
+        except PresentationIdentityError as exc:
+            st.error(f"Comparison display identity check failed: {exc}")
+            before_path = Path(before_observation["prepared_file"]["path"])
+            after_path = Path(after_observation["prepared_file"]["path"])
 
-        st.image(
-            comparison["overlay"],
-            caption=f"Prediction overlay for {interval}",
-            width="stretch",
-        )
-        st.markdown(
-            "**Overlay legend:** Red: predicted building changes. Yellow: predicted road changes."
-        )
-        st.caption(
-            "Each overlay is an independent model prediction for its labelled interval, not a "
-            "verified inventory or a count of buildings or roads."
-        )
+        if st.toggle(
+            "Show side-by-side fallback",
+            value=False,
+            key=f"comparison-side-by-side-{record['request_fingerprint']}-{comparison['id']}",
+        ):
+            input_columns = st.columns(2)
+            input_columns[0].image(
+                str(before_path),
+                caption=f"Before · {comparison['before_date']}",
+                width="stretch",
+            )
+            input_columns[1].image(
+                str(after_path),
+                caption=f"After · {comparison['after_date']}",
+                width="stretch",
+            )
+
+        if st.toggle(
+            "Show prediction overlay",
+            value=True,
+            key=f"comparison-overlay-{record['request_fingerprint']}-{comparison['id']}",
+        ):
+            st.image(
+                comparison["overlay"],
+                caption=f"Prediction overlay for {interval}",
+                width="stretch",
+            )
+            st.markdown(
+                "**Overlay legend:** Red: predicted building changes. Yellow: predicted road changes."
+            )
+            st.caption(
+                "Each overlay is an independent model prediction for its labelled interval, not a "
+                "verified inventory or a count of buildings or roads."
+            )
         with st.expander(f"View evidence and technical details · {interval}"):
             execution_path = Path(comparison["execution_record"])
             assistant_path = Path(comparison["assistant_record"])
@@ -668,6 +761,16 @@ def _show_infrastructure_timeline(record: Mapping[str, Any]) -> None:
         )
     with st.expander("View timeline provenance and technical details"):
         st.json(record)
+
+    _render_follow_up_chat(
+        FollowUpContext(
+            workflow="infrastructure_timeline",
+            analysis_id=Path(record["outputs"]["timeline_record"]).parent.name,
+            record=record,
+            base_answer=answer_path.read_text(encoding="utf-8"),
+            selected_comparison_id=selected_id,
+        )
+    )
 
 
 def _construction_mode() -> None:
@@ -1188,6 +1291,19 @@ def _show_historical_result(
         )
 
     summary_path = Path(record["outputs"]["summary"])
+    _render_follow_up_chat(
+        FollowUpContext(
+            workflow="historical_vegetation",
+            analysis_id=Path(record["outputs"]["execution_record"]).parent.name,
+            record=record,
+            base_answer=(
+                str(answer.get("text", ""))
+                if answer
+                else summary_path.read_text(encoding="utf-8")
+            ),
+            selected_comparison_id=selected_difference["label"],
+        )
+    )
     with st.expander("View evidence and technical details"):
         if answer and answer.get("fallback_used"):
             st.warning(f"Fallback reason: {answer.get('fallback_reason')}")
