@@ -662,74 +662,166 @@ def _show_historical_result(
         st.json(record)
 
 
+def _manual_historical_request(confirmed: ConfirmedAOI) -> None:
+    """Render the validated non-LLM fallback without displacing the chat workflow."""
+    st.caption("This fallback uses the same AOI, request validation, and historical tool as chat.")
+    control_columns = st.columns(3)
+    analysis_label = control_columns[0].selectbox(
+        "Requested analysis",
+        ("Vegetation NDVI timeline", "Construction/roads from historical Sentinel-2"),
+    )
+    current_year = datetime.now(timezone.utc).year
+    start_year = int(control_columns[1].number_input(
+        "Start year",
+        min_value=SUPPORTED_FIRST_YEAR,
+        max_value=current_year,
+        step=1,
+        key="historical_manual_start_year",
+    ))
+    end_year = int(control_columns[2].number_input(
+        "End year",
+        min_value=SUPPORTED_FIRST_YEAR,
+        max_value=current_year,
+        step=1,
+        key="historical_manual_end_year",
+    ))
+    analysis = "vegetation_ndvi" if analysis_label == "Vegetation NDVI timeline" else "construction"
+    control_signature = (confirmed.cache_key, start_year, end_year, analysis)
+    if st.session_state.get("historical_controls_signature") != control_signature:
+        st.session_state["historical_controls_signature"] = control_signature
+        st.session_state.pop("historical_request", None)
+        st.session_state.pop("historical_result", None)
+        st.session_state.pop("assistant_execution", None)
+        st.session_state.pop("historical_answer", None)
+
+    observation_count = end_year - start_year + 1
+    st.write(
+        f"Requested annual observations: {observation_count}; adjacent comparisons: "
+        f"{max(0, observation_count - 1)}. Maximum allowed observations: {MAX_ANNUAL_OBSERVATIONS}."
+    )
+    st.caption(
+        "Season policy: January 1–March 31 for every year. Candidate ranking: lowest catalogue cloud "
+        "first, then require at least 80% valid SCL coverage inside the confirmed AOI."
+    )
+    if st.button("Validate structured request"):
+        try:
+            validated = build_request(confirmed, start_year, end_year, analysis=analysis)
+            st.session_state["historical_request"] = validated
+            st.session_state.pop("historical_result", None)
+            st.session_state.pop("assistant_execution", None)
+            st.session_state.pop("historical_answer", None)
+        except HistoricalValidationError as exc:
+            st.error(str(exc))
+
+    validated_request = st.session_state.get("historical_request")
+    if isinstance(validated_request, HistoricalRequest):
+        st.success("Request validated. Analysis will use the exact confirmed AOI and fixed seasonal policy.")
+        with st.expander("Validated request"):
+            st.json(validated_request.record())
+        if st.button("Run historical analysis", type="primary"):
+            try:
+                with st.status("Searching and processing annual observations...", expanded=True) as status:
+                    st.write("Using bounded Earth Search queries and cached AOI windows where available")
+                    result = run_historical(
+                        validated_request,
+                        GEOLENS_OUTPUTS / "historical",
+                        HISTORICAL_CACHE,
+                    )
+                    status.update(label="Historical analysis complete", state="complete", expanded=False)
+                st.session_state["historical_result"] = result
+            except (HistoricalValidationError, HistoricalNetworkError, OSError, RuntimeError) as exc:
+                st.error(f"Historical analysis failed: {exc}")
+
+
 def _historical_mode() -> None:
     st.session_state.setdefault("historical_manual_start_year", 2021)
     st.session_state.setdefault("historical_manual_end_year", 2025)
-    st.header("Historical vegetation analysis")
+    if not st.session_state.get("historical_area_initialised"):
+        if not isinstance(st.session_state.get("historical_confirmed_aoi"), ConfirmedAOI):
+            activate_confirmed_aoi(
+                st.session_state,
+                DEMO_BOUNDS,
+                source="demo_preset",
+                label=DEMO_AOI_LABEL,
+            )
+        st.session_state["historical_area_initialised"] = True
+
+    st.header("Historical vegetation")
     st.write(
-        "Draw and confirm a small rectangle, then request a bounded Sentinel-2 annual NDVI timeline. "
-        "The initial map view is centred on Alappuzha but is not a confirmed analysis area."
+        "Ask a question about vegetation-related greenness inside the confirmed map area. "
+        "GeoLens validates the area and request before any satellite analysis runs."
     )
-    st.info(
-        f"Demo AOI limit: {DEFAULT_AREA_LIMIT_SQUARE_KM:.0f} km². The app retrieves only small "
-        "AOI raster windows and never applies the fine-resolution construction model to Sentinel-2."
-    )
-    st.markdown("### Demo preset")
-    if st.button("Load Alappuzha demo area", type="primary", width="stretch"):
-        activate_confirmed_aoi(
-            st.session_state,
-            DEMO_BOUNDS,
-            source="demo_preset",
-            label=DEMO_AOI_LABEL,
-        )
-        st.session_state["historical_manual_start_year"] = 2021
-        st.session_state["historical_manual_end_year"] = 2025
-        st.rerun()
-    st.caption(
-        "Loads and confirms the tested WGS84 bounds [76.34, 9.48, 76.36, 9.50] "
-        "through the same 25 km² AOI validator used for custom rectangles."
-    )
-
-    st.markdown("### Custom map selection")
-    st.caption("Draw a separate rectangle below, inspect its area, then confirm it explicitly.")
-    if st.button("Reset boundary and result"):
-        update_aoi_state(st.session_state, None)
-        st.rerun()
-    _historical_map()
-
-    draft = st.session_state.get("historical_draft_bounds")
-    draft_aoi = None
-    if draft:
-        try:
-            draft_aoi = confirm_aoi(draft)
-            st.write({
-                "draft_bounds_wgs84": [round(value, 7) for value in draft_aoi.bounds],
-                "approximate_area_square_km": round(draft_aoi.area_square_km, 3),
-            })
-        except HistoricalValidationError as exc:
-            st.error(str(exc))
-    if st.button("Confirm this boundary", disabled=draft_aoi is None, type="primary"):
-        activate_confirmed_aoi(
-            st.session_state,
-            draft_aoi.bounds,
-            source="custom_map_selection",
-            label="Custom map area",
-        )
-        st.success("Boundary confirmed. Request controls are now enabled.")
 
     confirmed = st.session_state.get("historical_confirmed_aoi")
-    if isinstance(confirmed, ConfirmedAOI):
-        confirmed_label = st.session_state.get("historical_aoi_label", "Confirmed map area")
-        if confirmed_label == DEMO_AOI_LABEL:
-            st.info("Using the Alappuzha demo area")
-        st.success(
-            f"{confirmed_label}: {confirmed.bounds}; approximately "
-            f"{confirmed.area_square_km:.3f} km²."
+    with st.container(border=True):
+        st.markdown("### Active analysis area")
+        if isinstance(confirmed, ConfirmedAOI):
+            confirmed_label = st.session_state.get("historical_aoi_label", "Confirmed map area")
+            st.success(
+                f"Using the {confirmed_label} · approximately "
+                f"{confirmed.area_square_km:.3f} km²"
+            )
+            st.caption(f"Confirmed WGS84 bounds: {confirmed.bounds}")
+        else:
+            st.warning("No area is confirmed. Confirm a custom rectangle or restore the demo area.")
+        if st.button("Load Alappuzha demo area", width="stretch"):
+            activate_confirmed_aoi(
+                st.session_state,
+                DEMO_BOUNDS,
+                source="demo_preset",
+                label=DEMO_AOI_LABEL,
+            )
+            st.session_state["historical_area_initialised"] = True
+            st.session_state["historical_manual_start_year"] = 2021
+            st.session_state["historical_manual_end_year"] = 2025
+            st.rerun()
+        st.caption(
+            "The tested demo preset uses WGS84 bounds [76.34, 9.48, 76.36, 9.50] and "
+            "the same area validator as a custom selection."
         )
-    else:
-        st.warning("No area is confirmed. Drawing or loading a rectangle does not confirm it automatically.")
+
+    _historical_map()
+
+    with st.expander("Choose or confirm a custom area"):
+        st.caption(
+            f"Draw a rectangle on the map, inspect it here, and confirm it explicitly. "
+            f"The current limit is {DEFAULT_AREA_LIMIT_SQUARE_KM:.0f} km². Changing the boundary "
+            "invalidates plans and results for the previous area."
+        )
+        if st.button("Reset boundary and result"):
+            update_aoi_state(st.session_state, None)
+            st.rerun()
+
+        draft = st.session_state.get("historical_draft_bounds")
+        draft_aoi = None
+        if draft:
+            try:
+                draft_aoi = confirm_aoi(draft)
+                st.write({
+                    "draft_bounds_wgs84": [round(value, 7) for value in draft_aoi.bounds],
+                    "approximate_area_square_km": round(draft_aoi.area_square_km, 3),
+                })
+            except HistoricalValidationError as exc:
+                st.error(str(exc))
+        if st.button("Confirm this boundary", disabled=draft_aoi is None, type="primary"):
+            activate_confirmed_aoi(
+                st.session_state,
+                draft_aoi.bounds,
+                source="custom_map_selection",
+                label="Custom map area",
+            )
+            st.success("Boundary confirmed. Request controls are now enabled.")
+            st.rerun()
+
+    confirmed = st.session_state.get("historical_confirmed_aoi")
+    if not isinstance(confirmed, ConfirmedAOI):
+        st.warning("Confirm an analysis area before asking GeoLens to make a plan.")
 
     st.markdown("### Ask GeoLens")
+    st.caption(
+        "Try: “Compare vegetation from 2021 to 2025.” Requests for construction, buildings, "
+        "or roads are preserved, but are not silently replaced with an NDVI analysis."
+    )
     provider_info = _cached_language_provider()
     if provider_info.available:
         st.success(
@@ -836,74 +928,8 @@ def _historical_mode() -> None:
     if not isinstance(confirmed, ConfirmedAOI):
         return
 
-    st.markdown("### Manual structured request")
-    st.caption("This remains available as a non-LLM fallback and uses the same validators and tool.")
-    control_columns = st.columns(3)
-    analysis_label = control_columns[0].selectbox(
-        "Requested analysis",
-        ("Vegetation NDVI timeline", "Construction/roads from historical Sentinel-2"),
-    )
-    current_year = datetime.now(timezone.utc).year
-    start_year = int(control_columns[1].number_input(
-        "Start year",
-        min_value=SUPPORTED_FIRST_YEAR,
-        max_value=current_year,
-        step=1,
-        key="historical_manual_start_year",
-    ))
-    end_year = int(control_columns[2].number_input(
-        "End year",
-        min_value=SUPPORTED_FIRST_YEAR,
-        max_value=current_year,
-        step=1,
-        key="historical_manual_end_year",
-    ))
-    analysis = "vegetation_ndvi" if analysis_label == "Vegetation NDVI timeline" else "construction"
-    control_signature = (confirmed.cache_key, start_year, end_year, analysis)
-    if st.session_state.get("historical_controls_signature") != control_signature:
-        st.session_state["historical_controls_signature"] = control_signature
-        st.session_state.pop("historical_request", None)
-        st.session_state.pop("historical_result", None)
-        st.session_state.pop("assistant_execution", None)
-        st.session_state.pop("historical_answer", None)
-
-    observation_count = end_year - start_year + 1
-    st.write(
-        f"Requested annual observations: {observation_count}; adjacent comparisons: "
-        f"{max(0, observation_count - 1)}. Maximum allowed observations: {MAX_ANNUAL_OBSERVATIONS}."
-    )
-    st.caption(
-        "Season policy: January 1–March 31 for every year. Candidate ranking: lowest catalogue cloud "
-        "first, then require at least 80% valid SCL coverage inside the confirmed AOI."
-    )
-    if st.button("Validate structured request"):
-        try:
-            validated = build_request(confirmed, start_year, end_year, analysis=analysis)
-            st.session_state["historical_request"] = validated
-            st.session_state.pop("historical_result", None)
-            st.session_state.pop("assistant_execution", None)
-            st.session_state.pop("historical_answer", None)
-        except HistoricalValidationError as exc:
-            st.error(str(exc))
-
-    validated_request = st.session_state.get("historical_request")
-    if isinstance(validated_request, HistoricalRequest):
-        st.success("Request validated. Analysis will use the exact confirmed AOI and fixed seasonal policy.")
-        with st.expander("Validated request"):
-            st.json(validated_request.record())
-        if st.button("Run historical analysis", type="primary"):
-            try:
-                with st.status("Searching and processing annual observations...", expanded=True) as status:
-                    st.write("Using bounded Earth Search queries and cached AOI windows where available")
-                    result = run_historical(
-                        validated_request,
-                        GEOLENS_OUTPUTS / "historical",
-                        HISTORICAL_CACHE,
-                    )
-                    status.update(label="Historical analysis complete", state="complete", expanded=False)
-                st.session_state["historical_result"] = result
-            except (HistoricalValidationError, HistoricalNetworkError, OSError, RuntimeError) as exc:
-                st.error(f"Historical analysis failed: {exc}")
+    with st.expander("Manual structured request (fallback)"):
+        _manual_historical_request(confirmed)
 
     result = st.session_state.get("historical_result")
     if isinstance(result, Mapping):
@@ -924,6 +950,12 @@ def main() -> None:
     mode = st.sidebar.radio(
         "Choose a workflow",
         ("Construction changes", "Vegetation comparison", "Historical vegetation"),
+        index=2,
+    )
+    st.sidebar.caption(
+        "Historical vegetation uses a confirmed map area and chat. Construction changes needs "
+        "aligned 256×256 RGB image pairs; Vegetation comparison runs the prepared multispectral example. "
+        "These workflows are not interchangeable."
     )
     st.sidebar.caption(
         f"Local only · upload limit {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per image · no database"

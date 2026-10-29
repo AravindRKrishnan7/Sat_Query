@@ -60,16 +60,23 @@ example” calls the corrected real-example configuration and displays its
 existing true-colour/NDVI comparison, provenance, common-valid coverage,
 persistent-vegetation statistics, threshold, warnings, and downloads.
 
-Historical vegetation mode starts with an unconfirmed map view over
-Alappuzha. The prominent **Load Alappuzha demo area** button validates and
-confirms the documented preset immediately; custom rectangle drawing remains a
-separate explicitly confirmed path. Changing the rectangle or confirmed source
-invalidates the old plan and result. The structured request supports two to
-five annual observations, defaults to 2021–2025, and rejects historical
-construction/road requests rather than applying the fine-resolution MCI model
-to Sentinel-2. Its chat field uses the local model only to extract a typed plan
-and choose from constrained, validated result statements. Analysis still
-starts only after an explicit Run action.
+Historical vegetation is the default GeoLens mode. On its first session run it
+activates the documented Alappuzha demo area through the same validator used
+for custom rectangles, shows the confirmed bounds and area, and keeps the map
+and chat as the primary interaction. Custom selection remains available in a
+secondary expander; changing or resetting the area invalidates the old plan and
+result. The non-LLM structured request is retained in a fallback expander. The
+workflow supports two to five annual observations, defaults to 2021–2025, and
+rejects historical construction/road requests rather than applying the
+fine-resolution MCI model to Sentinel-2. Its chat field uses the local model
+only to extract a typed plan and choose from constrained, validated result
+statements. Analysis still starts only after an explicit Run action.
+
+The sidebar retains all three workflows. **Construction changes** still needs
+an already aligned 256 × 256 RGB before/after pair. **Vegetation comparison**
+still runs the prepared multispectral example. They are manual alternatives
+with different input contracts, not automatic substitutes when a historical
+request is unavailable or unsupported.
 
 GeoLens writes every execution to a new ignored directory beneath
 `outputs/geolens/`. Uploaded images receive unique internal filenames; weights,
@@ -129,6 +136,39 @@ provider collection, observation IDs, asset/band URLs, AOI key, analysis grid,
 resampling, cached raster dtype/nodata and reflectance scale/offset. A mismatch
 uses the existing bounded retrieval path; if retrieval is unavailable, the
 mismatched cache is rejected rather than substituted.
+
+### Investigated historical capabilities
+
+Vegetation-covered area and building counts are not currently supported
+GeoLens findings. They remain separate from NDVI and changed-pixel outputs.
+
+- [Dynamic World V1](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_DYNAMICWORLD_V1)
+  is a promising 10 m, nine-class, per-Sentinel-2 land-cover probability
+  product available from June 2015 onward under CC BY 4.0. Its own guidance
+  calls for top-class probability thresholding. GeoLens has not yet selected
+  or locally validated a confidence/compositing policy for heterogeneous,
+  water-rich Alappuzha, aligned it to the accepted L2A observations, or
+  evaluated transition errors. SCL classes are therefore not repurposed as a
+  vegetation-extent classifier.
+- [ESA WorldCover](https://esa-worldcover.org/en/data-access) is 10 m and CC BY
+  4.0, but only the 2020 and 2021 maps are available. ESA also warns that those
+  maps use different algorithm versions, so their differences mix real change
+  with algorithm change. It cannot provide the requested 2021–2025 timeline.
+- [Open Buildings 2.5D Temporal](https://sites.research.google/gr/open-buildings/temporal/)
+  provides annual building-presence and fractional-count rasters for India
+  from 2016–2023 under CC BY 4.0 or ODbL 1.0. It is derived from stacks of 32
+  Sentinel-2 images, not the same individual GeoLens observations; it does not
+  identify temporal building instances, its confidence is uncalibrated, and
+  the publisher documents spatial drift. The model is available only by
+  request and was run on TPUs. No suitable freely usable, dated
+  high-resolution image series and evaluated local model for the same
+  Alappuzha area was established, so GeoLens does not expose counts or
+  new/removed-building claims.
+
+Adding either capability requires a separate, reproducible validation against
+local reference data, exact provenance and masks, and projected ground-area or
+temporal object-matching evaluation. No large asset or model was downloaded for
+this investigation.
 
 ## Local language-model interface
 

@@ -8,6 +8,96 @@ uses an AI model for its calculations. A separate local language-model layer
 now interprets requests and selects validated result statements without
 changing either analysis path.
 
+## Current GeoLens delivery
+
+### Implemented and verified
+
+- All three sidebar workflows remain available, with **Historical vegetation**
+  selected by default. Construction changes and the prepared two-date
+  vegetation comparison retain their existing input contracts and are never
+  substituted automatically.
+- A new historical session activates the Alappuzha demo bounds through
+  `confirm_aoi`, displays the 4.878053 km² active area, and keeps the map and
+  chat ahead of the fallback controls. An unchanged rerun preserves that
+  confirmation. Custom drawing is secondary; a changed or reset boundary
+  invalidates the old confirmation, plan, execution, answer and result.
+- Plan review and the explicit Run action are unchanged. The manual structured
+  request is now in a fallback expander. The readable checked answer remains
+  above images and charts; raw plans, pixel populations, provider details and
+  machine records remain expandable and downloadable.
+- The full lightweight suite passes 60 tests. Three Streamlit interface tests
+  verify workflow availability/default selection, one-time demo confirmation,
+  unchanged reruns, and reset invalidation. Existing tests continue to cover
+  changed-boundary invalidation, combined intent, missing years, unsupported
+  tools, cache identity, construction and two-date vegetation.
+
+The real updated Streamlit integration flow asked `Compare vegetation from
+2021 to 2025.` using local `qwen3:8b`. It produced a ready plan on the exact
+demo bounds, ran only after the Run action, loaded all 20 selected windows from
+the matching cache, and returned the established partial result: 2021, 2023,
+2024 and 2025 available; 2022 unavailable; 37,316 all-observation common-valid
+pixels (76.8277%). The constrained claim plan passed without fallback and the
+app rendered 15 downloads with no exception.
+
+- Assistant record:
+  `outputs/geolens/assistant/assistant-20261029T010841259934Z-788b4f4c30/assistant.json`
+- Historical record:
+  `outputs/geolens/historical/run-20261029T010841399635Z-b24a40ecc3/run.json`
+
+### Investigated but unverified
+
+**Vegetation extent.** Dynamic World V1 is the most plausible candidate found:
+it is a 10 m, nine-class probability/label product derived per Sentinel-2 L1C
+observation, available from 2015 onward under CC BY 4.0. The relevant candidate
+vegetation classes are trees, grass, flooded vegetation, crops, and
+shrub/scrub. Google recommends thresholding top-class probability rather than
+accepting every label. GeoLens has not established or locally validated an
+Alappuzha-specific probability threshold, temporal compositing policy, class
+aggregation, registration to the accepted L2A observations, or transition
+error matrix. Raw class/probability rasters, validity masks and projected area
+accounting would all be required before reporting square kilometres.
+
+ESA WorldCover was also assessed. It is a 10 m, 11-class CC BY 4.0 product, but
+only reference years 2020 and 2021 are available. ESA warns that the releases
+used different algorithm versions, so differences combine actual land-cover
+change and algorithm change. It cannot support the requested 2021–2025 annual
+workflow. SCL remains a quality mask; no SCL transition is reported as
+vegetation-area change.
+
+**Buildings.** Google's Open Buildings 2.5D Temporal product covers India with
+annual 2016–2023 building-presence and fractional-count rasters under CC BY 4.0
+or ODbL 1.0. It is generated from 32-image Sentinel-2 stacks around 30 June,
+not the individual historical acquisitions used here, and has about 4 m
+effective resolution. The publisher states that presence confidence is
+uncalibrated and that cross-year spatial drift, clouds and tiling can affect
+results. Its rasters do not identify individual temporal instances. The model
+is available only by request and the published large-scale inference used
+TPUs. The static Open Buildings high-resolution source imagery/annotations are
+not publicly released, and no suitable freely usable dated high-resolution
+Alappuzha image series plus locally evaluated detector was established.
+
+Primary references: [Dynamic World V1](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_DYNAMICWORLD_V1),
+[ESA WorldCover data access](https://esa-worldcover.org/en/data-access), and
+[Open Buildings 2.5D Temporal](https://sites.research.google/gr/open-buildings/temporal/).
+No new imagery or model was downloaded during this assessment.
+
+### Blocked or planned
+
+- Vegetation-covered area, vegetation/nonvegetation transitions and ground-area
+  totals remain blocked on product access plus a documented probability,
+  compositing, registration and local validation design. They are not inferred
+  from NDVI or SCL.
+- Historical building counts remain blocked on a suitable dated image/product
+  validation for this exact AOI and period. “New” and “removed” buildings would
+  additionally require temporal object identities and matching; subtracting
+  annual fractional counts would provide only an uncertain net estimate.
+- The existing MCI workflow remains the supported construction option only for
+  caller-supplied aligned 256 × 256 RGB pairs. It is not a building counter and
+  is never run on upsampled Sentinel-2 data.
+- No browser was connected to the browser-control surface, so visible browser
+  interaction is not claimed. The real Streamlit integration harness and
+  loopback server are verified separately.
+
 ## Local language-model interface
 
 GeoLens now connects to the existing loopback Ollama service. The environment
@@ -82,7 +172,7 @@ Streamlit reruns do not execute the tool again.
 
 ### Language-interface verification and limitations
 
-- 57 lightweight tests pass. Twenty-two language-interface tests cover unavailable
+- 60 lightweight tests pass. Twenty-two language-interface tests cover unavailable
   service, missing/invented dates, unconfirmed AOI, unsupported construction
   and roads, combined partial planning/execution, preset/application-state AOI
   resolution, conflicting places, boundary invalidation, tool failure, missing
@@ -179,12 +269,13 @@ is not claimed.
 
 ## Reproducible Alappuzha demo preset
 
-Historical mode now presents a prominent **Load Alappuzha demo area** action
-separately from custom rectangle drawing. It validates the tested WGS84 bounds
+Historical mode is now the default and activates the Alappuzha demo area once
+when a new session first enters the app. It validates the tested WGS84 bounds
 `[76.34, 9.48, 76.36, 9.50]` through the same `confirm_aoi` contract as a
-custom selection, immediately makes it the active confirmed AOI, displays its
-4.878053 km² calculated area and labels the map rectangle “Alappuzha demo
-area.” It records `demo_preset` as the boundary source.
+custom selection, makes it the active confirmed AOI, displays its 4.878053 km²
+calculated area and labels the map rectangle “Alappuzha demo area.” It records
+`demo_preset` as the boundary source. **Load Alappuzha demo area** remains
+available to restore the preset after a custom or reset selection.
 
 Activating the preset clears any plan, execution, answer or historical result
 from another AOI and defaults the manual controls to 2021–2025. Years extracted
@@ -242,7 +333,8 @@ construction and corrected two-date modes. It provides:
   yearly/common coverage requirements, denominator epsilon and NDVI threshold;
 - two to five annual observations (2021–2025 by default), with the adjacent
   comparison count shown before execution;
-- a real local-Ollama chat mode plus manual structured controls. The model
+- a real local-Ollama chat mode plus manual structured controls in a fallback
+  expander. The model
   produces an evidence-backed typed plan but cannot execute before validation
   and an explicit Run action;
 - honest rejection of historical construction/road requests. The MCI model is
@@ -314,14 +406,14 @@ cause.
 
 ### Historical verification and limitations
 
-- 57 lightweight tests pass: the original construction and two-date
+- 60 lightweight tests pass: the original construction and two-date
   vegetation regressions, eleven historical tests, and twenty-two language-interface
-  tests. Historical coverage includes unconfirmed and oversized AOIs,
+  tests, plus three focused Streamlit layout/state tests. Historical coverage includes unconfirmed and oversized AOIs,
   stale-state invalidation, invalid dates/request size, unsupported
   construction, scaling representations, cache failure, missing-year
   adjacency, and insufficient common coverage.
 - Streamlit's integration harness performed the real cached historical flow
-  from demo-boundary loading through explicit confirmation, validation,
+  from validated automatic demo activation through plan validation,
   execution and result rendering without exceptions.
 - The local server started at `http://127.0.0.1:8501`. No browser session was
   connected to the available browser-control surface, so live visible-browser
@@ -371,7 +463,8 @@ result-contract errors in user-facing language.
 
 - Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
   only in the project `.venv` and pinned in `requirements.in`.
-- All 57 lightweight tests pass. The six local-interface tests cover bounded
+- All 60 lightweight tests pass. The nine local-interface tests cover workflow
+  selection/default state, one-time demo confirmation and reset invalidation, plus bounded
   PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
   and execution-record validation; eleven historical and twenty-two language tests
   cover the contracts listed above.
