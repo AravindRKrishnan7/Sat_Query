@@ -63,6 +63,37 @@ option, so a change hides the retained timeline without deleting it.
 - Timeline answer:
   `outputs/geolens/construction-timelines/timeline-20261029T044436573706Z-172e36b1a6/timeline-answer.md`
 
+#### No-detection audit for the latest uploaded synthetic pair
+
+The later user run
+`outputs/geolens/construction-timelines/timeline-20261029T045617162787Z-b075502bbc/timeline.json`
+completed successfully but predicted no building change. Chronological order
+followed the unverified user dates exactly: `Suburban Neighbourhood
+Expansion.png` was assigned 2022-02-02 and prepared as SHA-256 `4cafdb14…186a`;
+`Suburban Homes Beside Open Fields.png` was assigned 2023-02-02 and prepared as
+`00bf319a…02e2`. Both 1254 × 1254 uploads were explicitly Lanczos-resized to
+256 × 256. The first prepared image visibly contains three houses along the
+lower road edge that are absent from the second, so the recorded direction is
+removal. The application cannot verify whether those supplied dates represent
+the intended synthetic chronology.
+
+The child MCI record used those exact prepared paths and hashes. It returned
+65,536 background pixels, zero road-change pixels, zero building-change
+pixels, and raw caption `the scene is the same as before`. Standalone CPU MCI
+on the exact same ordered files reproduced byte-identical mask, overlay,
+comparison and caption artifacts. Therefore preparation and timeline
+integration did not create the miss. A reversed-order diagnostic predicted
+4,827 building-change pixels and captioned houses being built, demonstrating
+direction sensitivity; GeoLens does not reverse the user-supplied chronology
+to obtain that positive result.
+
+The primary result is a genuine MCI missed detection for the recorded removal
+direction, not evidence that nothing changed. A smaller answer-evidence bug was
+fixed: the exact caption phrase `the scene is the same as before` is now
+recognised as an explicit model no-change statement rather than `unclear`.
+The checked answer still says only that the model did not identify building
+changes and retains the model-interpretation qualification.
+
 ### Vegetation history
 
 The Alappuzha preset, custom map, validated plan, explicit Run action,
@@ -88,7 +119,7 @@ output paths and the intentionally revised prose differ.
 
 ### Verification
 
-- All 86 lightweight regression tests pass, including twenty-one focused uploaded-
+- All 87 lightweight regression tests pass, including twenty-two focused uploaded-
   infrastructure/timeline tests and the preserved MCI, prepared two-date vegetation,
   historical cache/scaling and language-answer suites.
 - The expanded real `ollama/qwen3:8b` compatibility command passes all 13
@@ -216,7 +247,7 @@ Primary references: [Maxar Open Data on AWS](https://registry.opendata.aws/maxar
   request is now in a fallback expander. The readable checked answer remains
   above images and charts; raw plans, pixel populations, provider details and
   machine records remain expandable and downloadable.
-- The full lightweight suite passes 86 tests. Three Streamlit interface tests
+- The full lightweight suite passes 87 tests. Three Streamlit interface tests
   verify workflow availability/default selection, one-time demo confirmation,
   unchanged reruns, and reset invalidation. Existing tests continue to cover
   changed-boundary invalidation, combined intent, missing years, unsupported
@@ -367,7 +398,7 @@ Streamlit reruns do not execute the tool again.
 
 ### Language-interface verification and limitations
 
-- 86 lightweight tests pass. Twenty-seven historical language-interface tests cover unavailable
+- 87 lightweight tests pass. Twenty-seven historical language-interface tests cover unavailable
   service, missing/invented dates, unconfirmed AOI, unsupported construction
   and roads, combined partial planning/execution, preset/application-state AOI
   resolution, conflicting places, boundary invalidation, tool failure, missing
@@ -601,9 +632,9 @@ cause.
 
 ### Historical verification and limitations
 
-- 86 lightweight tests pass: the infrastructure timeline and two-date
+- 87 lightweight tests pass: the infrastructure timeline and two-date
   vegetation regressions, eleven historical tests, twenty-seven historical
-  language-interface tests, twenty-one uploaded-infrastructure/timeline tests and three
+  language-interface tests, twenty-two uploaded-infrastructure/timeline tests and three
   focused Streamlit layout/state tests. Historical coverage includes unconfirmed and oversized AOIs,
   stale-state invalidation, invalid dates/request size, unsupported
   construction, scaling representations, cache failure, missing-year
@@ -663,11 +694,11 @@ result-contract errors in user-facing language.
 
 - Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
   only in the project `.venv` and pinned in `requirements.in`.
-- All 86 lightweight tests pass. The local-interface tests cover workflow
+- All 87 lightweight tests pass. The local-interface tests cover workflow
   selection/default state, one-time demo confirmation and reset invalidation, plus bounded
   PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
   and execution-record validation; eleven historical, twenty-seven historical
-  language and twenty-one uploaded-infrastructure/timeline tests cover the contracts listed
+  language and twenty-two uploaded-infrastructure/timeline tests cover the contracts listed
   above.
 - Streamlit's integration harness rendered both main workflows without
   exceptions and ran real MCI and exact-AOI cached historical analysis, not

@@ -301,6 +301,7 @@ def assess_change_caption(raw_caption: str) -> dict[str, Any]:
 
     no_change = bool(
         re.search(r"\b(?:no change|nothing changed|nothing has changed)\b", normalized)
+        or re.search(r"\b(?:the )?scene is (?:the )?same as before\b", normalized)
         or normalized in {"same", "identical", "the same"}
     )
     building_mentioned = bool(re.search(rf"\b{BUILDING_TERM}\b", normalized))
@@ -436,6 +437,9 @@ def infrastructure_answer_details(
             sentences.append(
                 f"The model-generated description suggests {building_caption['label']} were {verb}, but no building changes were highlighted."
             )
+        elif caption["safe_for_paraphrase"] and building_direction == "no_change":
+            sentences.append(f"The model did not identify building changes{period}.")
+            sentences.append("Its generated description also indicates no change.")
         else:
             sentences.append(f"The model did not identify building changes{period}.")
 

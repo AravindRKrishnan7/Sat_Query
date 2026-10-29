@@ -11,6 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from satquery.infrastructure import (  # noqa: E402
     InfrastructureInterpretation,
+    infrastructure_answer_details,
     infrastructure_request_fingerprint,
     interpret_infrastructure_request,
     missing_image_message,
@@ -206,6 +207,31 @@ class InfrastructureAnswerTests(unittest.TestCase):
         self.assertIn("did not identify building or road changes", answer)
         self.assertIn("No red or yellow change highlights", answer)
         self.assertIn("description also indicates no change", answer)
+
+    def test_model_same_scene_caption_is_recognised_as_no_change_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            record = analysis_record(
+                Path(temporary),
+                caption_text="the scene is the same as before",
+                building_pixels=0,
+                road_pixels=0,
+            )
+            building_only = InfrastructureInterpretation(
+                original_request="What are the building changes?",
+                requested_classes=("building_change",),
+                general_change_requested=False,
+                instance_count_requested=False,
+                spatial_description_requested=False,
+                evidence={},
+                provider="ollama",
+                model="test-model",
+                runtime={},
+            )
+            details = infrastructure_answer_details(building_only, record, None, None)
+        self.assertTrue(details["caption_assessment"]["no_change"])
+        self.assertEqual("agreement", details["evidence_relationship"]["building"])
+        self.assertIn("did not identify building changes", details["text"])
+        self.assertIn("description also indicates no change", details["text"])
 
     def test_caption_mask_contradiction_is_disclosed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
