@@ -572,11 +572,14 @@ class SupportedAnswerTests(unittest.TestCase):
             FakeProvider(responder=valid_answer_plan), result
         )
         self.assertFalse(answer["fallback_used"])
-        self.assertIn("satellite-based indicator related to vegetation greenness", answer["text"])
+        self.assertIn("satellite-observed vegetation greenness", answer["text"])
         self.assertIn("7 February 2021", answer["text"])
         self.assertIn("12 February 2022", answer["text"])
         self.assertIn("Available comparisons", answer["text"])
         self.assertNotIn("plant health improved", answer["text"])
+        self.assertNotIn("pixels", answer["text"])
+        self.assertNotIn("0.4000", answer["text"])
+        self.assertNotIn("±", answer["text"])
 
     def test_missing_year_is_natural_and_is_not_bridged_as_adjacent(self) -> None:
         result = result_fixture()
@@ -592,8 +595,9 @@ class SupportedAnswerTests(unittest.TestCase):
         answer = generate_supported_answer(
             FakeProvider(responder=valid_answer_plan), result_fixture()
         )
-        self.assertIn("could not report a directly comparable multi-year NDVI trend", answer["text"])
-        self.assertIn("different pixel populations", answer["text"])
+        self.assertIn("could not report a directly comparable multi-year greenness finding", answer["text"])
+        self.assertIn("different parts of the area", answer["text"])
+        self.assertNotIn("75.0%", answer["text"])
 
     def test_small_average_with_mixed_local_categories_is_not_called_stable(self) -> None:
         result = complete_result_fixture()
@@ -606,9 +610,10 @@ class SupportedAnswerTests(unittest.TestCase):
         answer = generate_supported_answer(
             FakeProvider(responder=valid_answer_plan), result
         )
-        self.assertIn("mean NDVI difference was +0.0001", answer["text"])
-        self.assertIn("The map was mixed", answer["text"])
-        self.assertIn("40.0% increased", answer["text"])
+        self.assertIn("higher on the later date", answer["text"])
+        self.assertIn("both increases and decreases", answer["text"])
+        self.assertNotIn("0.0001", answer["text"])
+        self.assertNotIn("40.0%", answer["text"])
         self.assertNotIn("the area was stable", answer["text"].lower())
 
     def test_combined_request_reports_unsupported_analysis_without_inventing_result(self) -> None:

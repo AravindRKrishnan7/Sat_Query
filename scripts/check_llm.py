@@ -17,6 +17,7 @@ from satquery.language import (  # noqa: E402
     discover_ollama,
     interpret_request,
 )
+from satquery.infrastructure import interpret_infrastructure_request  # noqa: E402
 from satquery.historical import DEMO_AOI_LABEL, DEMO_BOUNDS, confirm_aoi  # noqa: E402
 
 
@@ -78,6 +79,33 @@ CASES = (
     ),
 )
 
+INFRASTRUCTURE_CASES = (
+    (
+        "What building and road changes does the model predict?",
+        {
+            "requested_classes": ["building_change", "road_change"],
+            "instance_count_requested": False,
+            "spatial_description_requested": False,
+        },
+    ),
+    (
+        "How many new buildings are visible?",
+        {
+            "requested_classes": ["building_change"],
+            "instance_count_requested": True,
+            "spatial_description_requested": False,
+        },
+    ),
+    (
+        "Where did road changes occur?",
+        {
+            "requested_classes": ["road_change"],
+            "instance_count_requested": False,
+            "spatial_description_requested": True,
+        },
+    ),
+)
+
 
 def main() -> int:
     info = discover_ollama()
@@ -103,7 +131,21 @@ def main() -> int:
             }
             if actual != expected:
                 raise RuntimeError(f"compatibility mismatch for {text!r}: {actual!r} != {expected!r}")
-            outputs.append({"request": text, "interpretation": actual})
+            outputs.append({"workflow": "vegetation_history", "request": text, "interpretation": actual})
+        for text, expected in INFRASTRUCTURE_CASES:
+            interpreted = interpret_infrastructure_request(provider, text)
+            actual = {
+                "requested_classes": list(interpreted.requested_classes),
+                "instance_count_requested": interpreted.instance_count_requested,
+                "spatial_description_requested": interpreted.spatial_description_requested,
+            }
+            if actual != expected:
+                raise RuntimeError(f"compatibility mismatch for {text!r}: {actual!r} != {expected!r}")
+            outputs.append({
+                "workflow": "buildings_and_infrastructure",
+                "request": text,
+                "interpretation": actual,
+            })
     except (LanguageModelError, RuntimeError) as exc:
         print(f"compatibility check failed: {exc}", file=sys.stderr)
         return 1

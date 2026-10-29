@@ -999,23 +999,23 @@ def _render_claim(claim_id: str, compact: Mapping[str, Any]) -> str:
         statistics = trend["annual_statistics"]
         first, last = statistics[0], statistics[-1]
         if last["mean"] > first["mean"]:
-            comparison = "higher than"
+            comparison = f"higher in {last['year']} than in {first['year']}"
         elif last["mean"] < first["mean"]:
-            comparison = "lower than"
+            comparison = f"lower in {last['year']} than in {first['year']}"
         else:
-            comparison = "the same as"
+            comparison = f"the same in {last['year']} as in {first['year']}"
         return (
-            f"The average NDVI—a satellite-based indicator related to vegetation greenness—in the "
-            f"last available observation was {comparison} the first: {first['mean']:.4f} in "
-            f"{first['year']} and {last['mean']:.4f} in {last['year']} on the same {trend['pixels']:,} "
-            f"pixels. Those pixels cover {trend['coverage']:.1%} of the area and were valid in every "
-            "available observation; the endpoint difference does not imply a steady change between dates."
+            f"Across the parts of the area that could be compared in every usable observation, "
+            f"average satellite-observed vegetation greenness was {comparison}. "
+            f"This endpoint comparison does not mean every part changed "
+            "in the same direction or that change was steady between observations."
         )
     if claim_id == "finding:insufficient_common":
         return (
-            "GeoLens could not report a directly comparable multi-year NDVI trend because only "
-            f"{trend['coverage']:.1%} of the area was valid across all available observations. "
-            "Per-year values use different pixel populations, so they are not compared here."
+            "GeoLens could not report a directly comparable multi-year greenness finding because "
+            "too little of the same area passed the validity checks in every usable observation. "
+            "The per-year values cover different parts of the area, so they are not presented as "
+            "one comparable trend."
         )
     if claim_id == "observations:actual_dates":
         available = [item for item in compact["observations"] if item["status"] == "available"]
@@ -1040,27 +1040,44 @@ def _render_claim(claim_id: str, compact: Mapping[str, Any]) -> str:
         label = claim_id.split(":", 1)[1]
         item = next(value for value in compact["adjacent_differences"] if value["label"] == label)
         categories = item["categories"]
-        threshold = item["threshold"]
+        mean = item["mean_ndvi_difference"]
+        if mean > 0:
+            direction = "higher on the later date"
+        elif mean < 0:
+            direction = "lower on the later date"
+        else:
+            direction = "unchanged on average"
+        increased = categories["increased"]["fraction"] > 0
+        decreased = categories["decreased"]["fraction"] > 0
+        if increased and decreased:
+            spatial_summary = "The difference map contains both increases and decreases."
+        elif increased:
+            spatial_summary = "The difference map contains areas of increase."
+        elif decreased:
+            spatial_summary = "The difference map contains areas of decrease."
+        else:
+            spatial_summary = "No area crossed the configured increase or decrease threshold."
         return (
-            f"**{_human_date(item['before_date'])} to {_human_date(item['after_date'])}:** on the "
-            f"{item['valid_pixels']:,} pixels valid on both dates "
-            f"({item['valid_coverage']:.1%} of the area), the mean NDVI difference was "
-            f"{_signed_decimal(item['mean_ndvi_difference'])}. The map was mixed: "
-            f"{categories['increased']['fraction']:.1%} increased by more than {threshold:g}, "
-            f"{categories['decreased']['fraction']:.1%} decreased by more than {threshold:g}, and "
-            f"{categories['approximately_stable']['fraction']:.1%} stayed within ±{threshold:g}."
+            f"**{_human_date(item['before_date'])} to {_human_date(item['after_date'])}:** average "
+            f"satellite-observed greenness was {direction} across the parts that could be compared. "
+            f"{spatial_summary}"
         )
     if claim_id.startswith("adjacent_unavailable:"):
         label = claim_id.split(":", 1)[1]
         return f"**{label.replace('-to-', ' to ')}:** no adjacent-year comparison is available."
     if claim_id == "comparison:first_to_last":
         item = compact["first_to_last_difference"]
+        if item["mean"] > 0:
+            direction = "higher on the later date"
+        elif item["mean"] < 0:
+            direction = "lower on the later date"
+        else:
+            direction = "unchanged on average"
         return (
-            f"Across the separate first-to-last pair population ({item['valid_pixels']:,} pixels; "
-            f"{item['valid_coverage']:.1%} of the area), the mean NDVI difference from "
-            f"{_human_date(item['before_date'])} to {_human_date(item['after_date'])} was "
-            f"{_signed_decimal(item['mean'])}. This population is not the same as the all-observation "
-            "common-pixel population."
+            f"From {_human_date(item['before_date'])} to {_human_date(item['after_date'])}, average "
+            f"satellite-observed greenness was {direction} in the separate first-to-last "
+            "comparison. That comparison does not use exactly the same common area as the "
+            "multi-observation finding above."
         )
     if claim_id.startswith("execution_issue:"):
         issue = next(value for value in compact["execution_issues"] if value["id"] == claim_id)
@@ -1077,8 +1094,9 @@ def _render_claim(claim_id: str, compact: Mapping[str, Any]) -> str:
         return f"The requested {analysis} analysis did not complete, so no finding is reported for it."
     if claim_id == "limitation:ndvi":
         return (
-            "NDVI does not directly measure plant health, tree count, vegetation area, causes, or "
-            "statistical significance; the threshold categories only describe numerical NDVI differences."
+            "This comparison uses NDVI, a satellite-based indicator related to vegetation greenness. "
+            "It does not establish tree counts, vegetation-covered area, plant health, causes, or "
+            "statistical significance."
         )
     raise LanguageModelValidationError(f"unsupported answer claim identifier: {claim_id}")
 

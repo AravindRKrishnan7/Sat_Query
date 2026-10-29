@@ -20,24 +20,21 @@ class GeoLensInterfaceTests(unittest.TestCase):
         self.assertEqual([], list(app.exception))
         return app
 
-    def test_all_workflows_remain_available_and_historical_is_default(self) -> None:
+    def test_exactly_two_workflows_remain_available_and_vegetation_is_default(self) -> None:
         app = self._app()
         workflow = app.sidebar.radio[0]
         self.assertEqual(
-            ["Construction changes", "Vegetation comparison", "Historical vegetation"],
+            ["Buildings and infrastructure", "Vegetation history"],
             workflow.options,
         )
-        self.assertEqual("Historical vegetation", workflow.value)
-        self.assertEqual("Historical vegetation", app.header[0].value)
+        self.assertEqual("Vegetation history", workflow.value)
+        self.assertEqual("Vegetation history", app.header[0].value)
         self.assertIn("Manual structured request (fallback)", [item.label for item in app.expander])
 
-        workflow.set_value("Construction changes").run()
+        workflow.set_value("Buildings and infrastructure").run()
         self.assertEqual([], list(app.exception))
-        self.assertEqual("Construction changes", app.header[0].value)
-
-        app.sidebar.radio[0].set_value("Vegetation comparison").run()
-        self.assertEqual([], list(app.exception))
-        self.assertEqual("Vegetation comparison", app.header[0].value)
+        self.assertEqual("Buildings and infrastructure", app.header[0].value)
+        self.assertTrue(any("What would you like" in item.label for item in app.text_area))
 
     def test_demo_aoi_is_confirmed_once_and_survives_unchanged_rerun(self) -> None:
         app = self._app()

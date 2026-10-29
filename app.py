@@ -51,6 +51,13 @@ from satquery.historical import (  # noqa: E402
     run_historical,
     update_aoi_state,
 )
+from satquery.infrastructure import (  # noqa: E402
+    infrastructure_request_fingerprint,
+    interpret_infrastructure_request,
+    missing_image_message,
+    validate_acquisition_dates,
+    write_infrastructure_audit,
+)
 from satquery.language import (  # noqa: E402
     LanguageModelError,
     OllamaProvider,
@@ -108,7 +115,10 @@ def _download(path: Path, label: str, mime: str, key: str) -> None:
     )
 
 
-def _show_construction_result(record: Mapping[str, Any]) -> None:
+def _show_construction_result(
+    record: Mapping[str, Any],
+    audit: Mapping[str, Any],
+) -> None:
     try:
         outputs = validate_result_record(
             record,
@@ -125,43 +135,67 @@ def _show_construction_result(record: Mapping[str, Any]) -> None:
         st.error(str(exc))
         return
 
-    st.subheader("Latest construction analysis")
+    st.subheader("GeoLens answer")
+    st.markdown(str(audit["answer"]["text"]))
+    st.caption(
+        "The local language model interpreted the question. The application produced this answer "
+        "from the validated intent and recorded MCI mask classes; it did not accept unrestricted "
+        "model-written findings."
+    )
+
+    st.subheader("Uploaded image comparison")
     before_path = Path(record["inputs"]["before"]["path"])
     after_path = Path(record["inputs"]["after"]["path"])
+    supplied_dates = audit["user_supplied_acquisition_dates"]
+    before_caption = "Before — prepared model input"
+    after_caption = "After — prepared model input"
+    if supplied_dates.get("before"):
+        before_caption += f" · user-supplied date {supplied_dates['before']}"
+    if supplied_dates.get("after"):
+        after_caption += f" · user-supplied date {supplied_dates['after']}"
     before_column, after_column = st.columns(2)
-    before_column.image(str(before_path), caption="Before — prepared model input", width="stretch")
-    after_column.image(str(after_path), caption="After — prepared model input", width="stretch")
+    before_column.image(str(before_path), caption=before_caption, width="stretch")
+    after_column.image(str(after_path), caption=after_caption, width="stretch")
 
-    mask_column, overlay_column = st.columns(2)
-    mask_column.image(
-        str(outputs["color_mask_with_legend"]),
-        caption="Predicted class mask",
+    st.image(
+        str(outputs["overlay"]),
+        caption="MCI prediction overlay on the prepared after image",
         width="stretch",
     )
-    overlay_column.image(str(outputs["overlay"]), caption="Prediction overlay on after image", width="stretch")
 
     st.markdown(
-        "**Mask colours:** black = background; yellow = predicted road change; "
-        "red = predicted building change."
+        "**Overlay legend:** transparent = predicted background; yellow = predicted road-change "
+        "pixels; red = predicted building-change pixels."
     )
-    distribution = record["model_outputs"]["mask_class_distribution"]
-    fraction_columns = st.columns(3)
-    for column, label in zip(fraction_columns, (0, 1, 2)):
-        item = distribution[str(label)]
-        column.metric(f"Predicted pixel fraction — {CLASS_NAMES[label]}", f"{item['fraction']:.2%}")
     st.caption(
-        "These percentages are fractions of model-output pixels. They are not accuracy, confidence, "
-        "real-world area, or reference-label counts."
+        "The overlay is a model prediction on a caller-supplied aligned pair. It is not a verified "
+        "inventory of buildings or roads."
     )
 
-    st.markdown("**Raw model caption**")
-    st.code(record["model_outputs"]["caption"]["text"] or "[empty]", language=None)
-    st.caption(
-        "Caption repetitions are preserved exactly. The caption is an unverified output from a separate "
-        "model head and is not derived from the mask."
-    )
-
-    with st.expander("Downloads and technical details"):
+    with st.expander("View evidence and technical details"):
+        st.image(
+            str(outputs["color_mask_with_legend"]),
+            caption="Predicted class mask with embedded legend",
+            width="stretch",
+        )
+        distribution = record["model_outputs"]["mask_class_distribution"]
+        fraction_columns = st.columns(3)
+        for column, label in zip(fraction_columns, (0, 1, 2)):
+            item = distribution[str(label)]
+            column.metric(
+                f"Predicted pixel fraction — {CLASS_NAMES[label]}",
+                f"{item['fraction']:.2%}",
+            )
+        st.caption(
+            "These percentages are fractions of model-output pixels. They are not accuracy, "
+            "confidence, real-world area, object counts, or reference-label counts."
+        )
+        st.markdown("**Raw model caption**")
+        st.code(record["model_outputs"]["caption"]["text"] or "[empty]", language=None)
+        st.caption(
+            "Caption repetitions are preserved exactly. The caption is an unverified output from "
+            "a separate model head and may disagree with the mask."
+        )
         download_columns = st.columns(3)
         with download_columns[0]:
             _download(outputs["color_mask_with_legend"], "Download coloured mask", "image/png", "construction-mask")
@@ -169,16 +203,73 @@ def _show_construction_result(record: Mapping[str, Any]) -> None:
             _download(outputs["overlay"], "Download overlay", "image/png", "construction-overlay")
         with download_columns[2]:
             _download(outputs["caption"], "Download raw caption", "text/plain", "construction-caption")
-        _download(outputs["execution_record"], "Download execution record", "application/json", "construction-json")
+        record_columns = st.columns(3)
+        with record_columns[0]:
+            _download(
+                Path(audit["outputs"]["answer_text"]),
+                "Download answer",
+                "text/markdown",
+                "infrastructure-answer",
+            )
+        with record_columns[1]:
+            _download(
+                outputs["execution_record"],
+                "Download MCI execution record",
+                "application/json",
+                "construction-json",
+            )
+        with record_columns[2]:
+            _download(
+                Path(audit["outputs"]["assistant_record"]),
+                "Download assistant audit record",
+                "application/json",
+                "infrastructure-audit",
+            )
+        st.markdown("**Validated question interpretation**")
+        st.json(audit["validated_interpretation"])
+        st.markdown("**MCI execution record**")
         st.json(record)
 
 
 def _construction_mode() -> None:
-    st.header("Construction changes")
+    st.header("Buildings and infrastructure")
     st.write(
-        "Upload before and after PNG/JPEG images of the same location. The verified model requires "
-        "already aligned, 256×256, three-channel RGB inputs."
+        "Ask a question and upload both a before image and an after image of the same location. "
+        "A change comparison cannot be made from only one image."
     )
+    question = st.text_area(
+        "What would you like to know about the changes?",
+        placeholder="Example: What building and road changes does the model predict?",
+        key="infrastructure-question",
+        max_chars=2_000,
+    )
+    date_columns = st.columns(2)
+    before_date_text = date_columns[0].text_input(
+        "Before acquisition date (optional)",
+        placeholder="YYYY-MM-DD",
+        key="infrastructure-before-date",
+    )
+    after_date_text = date_columns[1].text_input(
+        "After acquisition date (optional)",
+        placeholder="YYYY-MM-DD",
+        key="infrastructure-after-date",
+    )
+    validated_dates: tuple[str | None, str | None] = (None, None)
+    date_error: str | None = None
+    try:
+        validated_dates = validate_acquisition_dates(before_date_text, after_date_text)
+    except LanguageModelError as exc:
+        date_error = str(exc)
+        st.error(date_error)
+
+    provider_info = _cached_language_provider()
+    if provider_info.available:
+        st.caption(
+            f"Question interpretation uses the local {provider_info.identifier} model. "
+            "It cannot add findings beyond the MCI outputs."
+        )
+    else:
+        st.warning(f"Local language model unavailable: {provider_info.reason}")
     st.warning(
         "Resizing changes pixel dimensions only. It does not align images, create missing detail, "
         "guarantee suitable ground resolution, or make two locations comparable."
@@ -191,6 +282,9 @@ def _construction_mode() -> None:
     after_file = after_upload.file_uploader(
         "After image", type=("png", "jpg", "jpeg"), key="construction-after"
     )
+    missing_image = missing_image_message(before_file is not None, after_file is not None)
+    if missing_image:
+        st.info(missing_image)
     resize = st.checkbox(
         "Create explicit 256×256 prepared copies when dimensions differ (Lanczos resampling)",
         value=False,
@@ -241,30 +335,90 @@ def _construction_mode() -> None:
     for message in prerequisites:
         st.error(message)
 
-    can_analyse = bool(prepared_before and prepared_after and aligned and not errors and not prerequisites)
-    if st.button("Analyse construction changes", type="primary", disabled=not can_analyse):
-        run_directory = create_unique_run_directory(GEOLENS_OUTPUTS / "construction", "run")
+    before_bytes = before_file.getvalue() if before_file is not None else None
+    after_bytes = after_file.getvalue() if after_file is not None else None
+    request_fingerprint = infrastructure_request_fingerprint(
+        question,
+        before_bytes,
+        after_bytes,
+        before_date_text,
+        after_date_text,
+        resize,
+    )
+    can_analyse = bool(
+        question.strip()
+        and prepared_before
+        and prepared_after
+        and aligned
+        and not errors
+        and not prerequisites
+        and date_error is None
+        and provider_info.available
+    )
+    if st.button("Analyse uploaded pair", type="primary", disabled=not can_analyse):
         try:
-            before_path, after_path = save_prepared_pair(prepared_before, prepared_after, run_directory)
-            args = argparse.Namespace(
-                before=before_path,
-                after=after_path,
-                checkpoint=CHECKPOINT,
-                output_dir=run_directory,
-                device="cpu",
-                source_dir=CHANGE_SOURCE,
-            )
-            with st.status("Running verified CPU inference...", expanded=True) as status:
+            with st.status("Interpreting the question and running verified CPU inference...", expanded=True) as status:
+                interpretation = interpret_infrastructure_request(
+                    OllamaProvider(provider_info),
+                    question,
+                )
+                st.write("Question accepted; validating the uploaded pair and checkpoint")
+                run_directory = create_unique_run_directory(
+                    GEOLENS_OUTPUTS / "construction",
+                    "run",
+                )
+                before_path, after_path = save_prepared_pair(
+                    prepared_before,
+                    prepared_after,
+                    run_directory,
+                )
+                args = argparse.Namespace(
+                    before=before_path,
+                    after=after_path,
+                    checkpoint=CHECKPOINT,
+                    output_dir=run_directory,
+                    device="cpu",
+                    source_dir=CHANGE_SOURCE,
+                )
                 st.write("Validating inputs, checkpoint and upstream source")
                 record = run_change_agent(args, model_loader=_streamlit_model_loader)
-                status.update(label="Construction analysis complete", state="complete", expanded=False)
-            st.session_state["construction_result"] = record
-        except (FileNotFoundError, InputValidationError, ModelSafetyError, RuntimeError) as exc:
-            st.error(f"Construction analysis failed: {exc}")
+                audit = write_infrastructure_audit(
+                    interpretation,
+                    record,
+                    validated_dates[0],
+                    validated_dates[1],
+                )
+                status.update(
+                    label="Buildings and infrastructure analysis complete",
+                    state="complete",
+                    expanded=False,
+                )
+            st.session_state["infrastructure_result"] = {
+                "fingerprint": request_fingerprint,
+                "analysis": record,
+                "audit": audit,
+            }
+        except (
+            FileNotFoundError,
+            InputValidationError,
+            LanguageModelError,
+            ModelSafetyError,
+            RuntimeError,
+        ) as exc:
+            st.error(f"Buildings and infrastructure analysis failed: {exc}")
 
-    record = st.session_state.get("construction_result")
-    if isinstance(record, Mapping):
-        _show_construction_result(record)
+    retained = st.session_state.get("infrastructure_result")
+    if isinstance(retained, Mapping):
+        if retained.get("fingerprint") == request_fingerprint:
+            record = retained.get("analysis")
+            audit = retained.get("audit")
+            if isinstance(record, Mapping) and isinstance(audit, Mapping):
+                _show_construction_result(record, audit)
+        else:
+            st.info(
+                "The question, images, dates, or preparation setting changed. The previous run "
+                "remains on disk but is not shown as a result for these inputs."
+            )
 
 
 def _prepared_vegetation_inputs() -> tuple[dict[str, Any] | None, list[Path]]:
@@ -486,8 +640,8 @@ def _show_historical_result(
             )
         else:
             st.caption(
-                "Generated from a validated claim plan; dates, intervals and numerical values come "
-                "from the execution record."
+                "Generated from a validated claim plan; every displayed finding and date is tied "
+                "to the execution record."
             )
         if assistant_execution:
             answer_path_value = assistant_execution.get("outputs", {}).get("answer_text")
@@ -525,23 +679,6 @@ def _show_historical_result(
             width="stretch",
         )
 
-    trend = record["common_valid_trend"]
-    st.markdown("### Directly comparable trend")
-    st.metric("Pixels valid across every available observation", f"{trend['coverage']:.1%}")
-    if trend["sufficient"]:
-        chart_rows = trend["annual_statistics"]
-        st.line_chart(
-            {
-                "year": [item["year"] for item in chart_rows],
-                "mean NDVI": [item["mean"] for item in chart_rows],
-                "median NDVI": [item["median"] for item in chart_rows],
-            },
-            x="year",
-            y=["mean NDVI", "median NDVI"],
-        )
-    else:
-        st.warning(f"Comparable trend withheld: {trend['reason']}")
-
     st.markdown("### Adjacent-observation NDVI differences")
     st.caption(
         "Blue = NDVI increase; red = NDVI decrease; white = little difference; grey = excluded. "
@@ -572,6 +709,22 @@ def _show_historical_result(
     with st.expander("View evidence and technical details"):
         if answer and answer.get("fallback_used"):
             st.warning(f"Fallback reason: {answer.get('fallback_reason')}")
+        trend = record["common_valid_trend"]
+        st.markdown("**Directly comparable trend metrics**")
+        st.metric("Common-valid coverage", f"{trend['coverage']:.1%}")
+        if trend["sufficient"]:
+            chart_rows = trend["annual_statistics"]
+            st.line_chart(
+                {
+                    "year": [item["year"] for item in chart_rows],
+                    "mean NDVI": [item["mean"] for item in chart_rows],
+                    "median NDVI": [item["median"] for item in chart_rows],
+                },
+                x="year",
+                y=["mean NDVI", "median NDVI"],
+            )
+        else:
+            st.warning(f"Comparable trend withheld: {trend['reason']}")
         cache = record["cache"]
         cache_columns = st.columns(2)
         cache_columns[0].metric(
@@ -747,7 +900,7 @@ def _historical_mode() -> None:
             )
         st.session_state["historical_area_initialised"] = True
 
-    st.header("Historical vegetation")
+    st.header("Vegetation history")
     st.write(
         "Ask a question about vegetation-related greenness inside the confirmed map area. "
         "GeoLens validates the area and request before any satellite analysis runs."
@@ -958,21 +1111,19 @@ def main() -> None:
     st.sidebar.markdown("## Analysis mode")
     mode = st.sidebar.radio(
         "Choose a workflow",
-        ("Construction changes", "Vegetation comparison", "Historical vegetation"),
-        index=2,
+        ("Buildings and infrastructure", "Vegetation history"),
+        index=1,
     )
     st.sidebar.caption(
-        "Historical vegetation uses a confirmed map area and chat. Construction changes needs "
-        "aligned 256×256 RGB image pairs; Vegetation comparison runs the prepared multispectral example. "
-        "These workflows are not interchangeable."
+        "Buildings and infrastructure requires a question plus an aligned before/after RGB pair. "
+        "Vegetation history uses a confirmed map area, annual satellite observations and corrected "
+        "NDVI processing. The inputs and results are not interchangeable."
     )
     st.sidebar.caption(
         f"Local only · upload limit {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per image · no database"
     )
-    if mode == "Construction changes":
+    if mode == "Buildings and infrastructure":
         _construction_mode()
-    elif mode == "Vegetation comparison":
-        _vegetation_mode()
     else:
         _historical_mode()
 
