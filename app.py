@@ -122,6 +122,74 @@ def _download(path: Path, label: str, mime: str, key: str) -> None:
     )
 
 
+def _inject_geolens_theme() -> None:
+    """Apply a small stable theme layer without targeting generated DOM positions."""
+    st.markdown(
+        """
+        <style>
+        :root {
+          --gl-navy: #0b1f33;
+          --gl-navy-soft: #12304a;
+          --gl-teal: #0f766e;
+          --gl-teal-bright: #2dd4bf;
+          --gl-paper: #f7fafc;
+          --gl-muted: #64748b;
+          --gl-line: #dbe5ec;
+        }
+        .stApp { background: var(--gl-paper); color: var(--gl-navy); }
+        [data-testid="stSidebar"] { background: var(--gl-navy); }
+        [data-testid="stSidebar"] * { color: #edf7f7; }
+        [data-testid="stSidebar"] [data-baseweb="radio"] label {
+          border-radius: 0.55rem; padding: 0.2rem 0.45rem;
+        }
+        [data-testid="stSidebar"] [aria-checked="true"] {
+          background: rgba(45, 212, 191, 0.16);
+        }
+        [data-testid="stMainBlockContainer"] {
+          max-width: 1180px; padding-top: 1.4rem; padding-bottom: 4rem;
+        }
+        [data-testid="stAlert"] { border-radius: 0.65rem; }
+        [data-testid="stExpander"] {
+          border: 1px solid var(--gl-line); border-radius: 0.65rem;
+          background: rgba(255,255,255,0.72);
+        }
+        [data-testid="stChatMessage"] {
+          border: 1px solid var(--gl-line); border-radius: 0.75rem;
+          background: #ffffff;
+        }
+        .stButton > button[kind="primary"] {
+          background: var(--gl-teal); border-color: var(--gl-teal);
+          font-weight: 650;
+        }
+        .stButton > button[kind="primary"]:hover {
+          background: #115e59; border-color: #115e59;
+        }
+        .geolens-hero {
+          display: flex; align-items: center; gap: 0.9rem;
+          padding: 0.2rem 0 1.15rem; border-bottom: 1px solid var(--gl-line);
+          margin-bottom: 1.25rem;
+        }
+        .geolens-mark {
+          width: 2.45rem; height: 2.45rem; border-radius: 0.72rem;
+          display: grid; place-items: center; color: white; font-weight: 800;
+          background: linear-gradient(145deg, var(--gl-navy-soft), var(--gl-teal));
+        }
+        .geolens-hero h1 { font-size: 1.55rem; line-height: 1.2; margin: 0; }
+        .geolens-hero p { color: var(--gl-muted); margin: 0.15rem 0 0; }
+        .geolens-step {
+          color: var(--gl-teal); font-size: 0.78rem; font-weight: 750;
+          letter-spacing: 0.06em; text-transform: uppercase; margin-top: 1rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _step(label: str) -> None:
+    st.markdown(f'<div class="geolens-step">{label}</div>', unsafe_allow_html=True)
+
+
 def _show_construction_result(
     record: Mapping[str, Any],
     audit: Mapping[str, Any],
@@ -461,8 +529,25 @@ def _show_infrastructure_timeline(record: Mapping[str, Any]) -> None:
             width="stretch",
         )
 
-    st.subheader("Comparison evidence")
-    for comparison in record["comparisons"]:
+    st.subheader("Explore a comparison")
+    comparisons = list(record["comparisons"])
+    comparison_by_id = {item["id"]: item for item in comparisons}
+    selected_id = st.selectbox(
+        "Comparison interval",
+        [item["id"] for item in comparisons],
+        format_func=lambda value: (
+            ("Overall first-to-last" if comparison_by_id[value]["kind"] == "endpoint" else "Consecutive")
+            + " · "
+            + comparison_by_id[value]["before_date"]
+            + " → "
+            + comparison_by_id[value]["after_date"]
+            + (" · unavailable" if comparison_by_id[value]["status"] != "success" else "")
+        ),
+        key=f"timeline-comparison-{Path(record['outputs']['timeline_record']).parent.name}",
+    )
+    selected_comparisons = [comparison_by_id[selected_id]]
+    observation_by_id = {item["id"]: item for item in observations}
+    for comparison in selected_comparisons:
         interval = f"{comparison['before_date']} → {comparison['after_date']}"
         if comparison["kind"] == "endpoint":
             st.markdown(f"### Overall endpoint comparison · {interval}")
@@ -475,6 +560,20 @@ def _show_infrastructure_timeline(record: Mapping[str, Any]) -> None:
         if comparison["status"] != "success":
             st.error(f"Comparison failed: {comparison.get('error', 'unknown error')}")
             continue
+
+        input_columns = st.columns(2)
+        before_observation = observation_by_id[comparison["before_observation"]]
+        after_observation = observation_by_id[comparison["after_observation"]]
+        input_columns[0].image(
+            before_observation["prepared_file"]["path"],
+            caption=f"Before · {comparison['before_date']}",
+            width="stretch",
+        )
+        input_columns[1].image(
+            after_observation["prepared_file"]["path"],
+            caption=f"After · {comparison['after_date']}",
+            width="stretch",
+        )
 
         st.image(
             comparison["overlay"],
@@ -577,6 +676,7 @@ def _construction_mode() -> None:
         "Ask a question and upload 2–4 dated images of the same location. GeoLens compares each "
         "consecutive pair with the existing change model."
     )
+    _step("1 · Select inputs")
     question = st.text_area(
         "What would you like to know about the changes?",
         placeholder="Example: What building and road changes does the model predict over time?",
@@ -652,6 +752,7 @@ def _construction_mode() -> None:
             st.error(observation_error)
 
     if observations:
+        _step("2 · Review chronological order")
         st.markdown("**Chronological order used for analysis**")
         preview_columns = st.columns(len(observations))
         for column, observation in zip(preview_columns, observations, strict=True):
@@ -709,6 +810,7 @@ def _construction_mode() -> None:
         and not prerequisites
         and provider_info.available
     )
+    _step("3 · Analyse")
     if st.button("Run timeline analysis", type="primary", disabled=not can_analyse):
         try:
             with st.status(
@@ -764,6 +866,7 @@ def _construction_mode() -> None:
     retained = st.session_state.get("infrastructure_timeline_result")
     if isinstance(retained, Mapping):
         if retained.get("request_fingerprint") == request_fingerprint:
+            _step("4 · Explore results")
             _show_infrastructure_timeline(retained)
         else:
             st.info(
@@ -1012,49 +1115,77 @@ def _show_historical_result(
     else:
         st.error("No requested year produced a suitable observation. Details are retained below.")
 
+    available_observations = [
+        item for item in record["annual_observations"] if item["status"] == "available"
+    ]
     for observation in record["annual_observations"]:
-        year = observation["year"]
         if observation["status"] != "available":
-            st.warning(f"{year}: unavailable — {observation.get('reason', 'no suitable observation')}")
-            continue
-        st.markdown(f"### {year} · acquired {observation['acquisition_date']}")
+            st.warning(
+                f"{observation['year']}: unavailable — "
+                f"{observation.get('reason', 'no suitable observation')}"
+            )
+    if available_observations:
+        observation_by_year = {item["year"]: item for item in available_observations}
+        selected_year = st.selectbox(
+            "Dated satellite observation",
+            list(observation_by_year),
+            format_func=lambda value: (
+                f"{value} · acquired {observation_by_year[value]['acquisition_date']}"
+            ),
+            key=f"historical-observation-{Path(record['outputs']['execution_record']).parent.name}",
+        )
+        observation = observation_by_year[selected_year]
         image_columns = st.columns(2)
         image_columns[0].image(
             observation["outputs"]["true_color_png"],
-            caption=f"{year} true colour · display stretch only",
+            caption=f"{selected_year} true colour · display stretch only",
             width="stretch",
         )
         image_columns[1].image(
             observation["outputs"]["ndvi_png"],
-            caption=f"{year} NDVI · grey pixels excluded",
+            caption=f"{selected_year} NDVI · grey pixels excluded",
             width="stretch",
         )
 
-    st.markdown("### Adjacent-observation NDVI differences")
+    st.markdown("### Explore an NDVI comparison")
     st.caption(
         "Blue = NDVI increase; red = NDVI decrease; white = little difference; grey = excluded. "
         "Unavailable years are not bridged or relabelled as adjacent comparisons."
     )
-    for difference in record["adjacent_differences"]:
-        if difference["status"] != "available":
-            st.warning(f"{difference['label']}: unavailable — {difference['reason']}")
-            continue
-        st.image(
-            difference["outputs"]["difference_png"],
-            caption=f"{difference['before_date']} to {difference['after_date']} NDVI difference",
-            width="stretch",
-        )
-
     first_last = record["first_to_last_difference"]
-    st.markdown("### First-to-last NDVI difference")
-    if first_last["status"] == "available":
+    differences = list(record["adjacent_differences"]) + [
+        {**first_last, "comparison_kind": "first_to_last"}
+    ]
+    difference_by_key = {
+        f"{item.get('comparison_kind', 'adjacent')}:{item['label']}": item
+        for item in differences
+    }
+    selected_difference_key = st.selectbox(
+        "NDVI difference interval",
+        list(difference_by_key),
+        format_func=lambda value: (
+            ("First-to-last" if value.startswith("first_to_last:") else "Adjacent")
+            + " · "
+            + difference_by_key[value]["label"].replace("-to-", " → ").replace("-first-last", "")
+            + (" · unavailable" if difference_by_key[value]["status"] != "available" else "")
+        ),
+        key=f"historical-difference-{Path(record['outputs']['execution_record']).parent.name}",
+    )
+    selected_difference = difference_by_key[selected_difference_key]
+    if selected_difference["status"] == "available":
         st.image(
-            first_last["outputs"]["difference_png"],
-            caption=f"{first_last['before_date']} to {first_last['after_date']}",
+            selected_difference["outputs"]["difference_png"],
+            caption=(
+                f"{selected_difference['before_date']} to "
+                f"{selected_difference['after_date']} NDVI difference"
+            ),
             width="stretch",
         )
     else:
-        st.warning(first_last["reason"])
+        st.warning(
+            f"{selected_difference['label']}: unavailable — "
+            f"{selected_difference['reason']}"
+        )
 
     summary_path = Path(record["outputs"]["summary"])
     with st.expander("View evidence and technical details"):
@@ -1256,6 +1387,7 @@ def _historical_mode() -> None:
         "Ask a question about vegetation-related greenness inside the confirmed map area. "
         "GeoLens validates the area and request before any satellite analysis runs."
     )
+    _step("1 · Confirm area")
 
     confirmed = st.session_state.get("historical_confirmed_aoi")
     with st.container(border=True):
@@ -1322,6 +1454,7 @@ def _historical_mode() -> None:
     if not isinstance(confirmed, ConfirmedAOI):
         st.warning("Confirm an analysis area before asking GeoLens to make a plan.")
 
+    _step("2 · Ask and review")
     st.markdown("### Ask GeoLens")
     st.caption(
         "Try: “Compare vegetation from 2021 to 2025.” Requests for construction, buildings, "
@@ -1415,6 +1548,8 @@ def _historical_mode() -> None:
         for tool in assistant_plan.tools:
             if tool.get("status") == "unsupported_in_historical_mode":
                 st.warning(str(tool.get("reason")))
+        if assistant_plan.runnable:
+            _step("3 · Analyse")
         if assistant_plan.runnable and st.button("Run interpreted request", type="primary"):
             with st.status("Executing validated GeoLens tools...", expanded=True) as status:
                 execution, tool_result = execute_tool_plan(
@@ -1446,6 +1581,7 @@ def _historical_mode() -> None:
 
     result = st.session_state.get("historical_result")
     if isinstance(result, Mapping):
+        _step("4 · Explore results")
         answer = st.session_state.get("historical_answer")
         assistant_execution = st.session_state.get("assistant_execution")
         _show_historical_result(
@@ -1457,16 +1593,27 @@ def _historical_mode() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="GeoLens", page_icon="🌍", layout="wide")
-    st.title("GeoLens")
-    st.caption("Local satellite change analysis using SatQuery's existing verified tools")
-    st.sidebar.markdown("## Analysis mode")
+    _inject_geolens_theme()
+    st.markdown(
+        """
+        <div class="geolens-hero">
+          <div class="geolens-mark">G</div>
+          <div>
+            <h1>GeoLens</h1>
+            <p>Local, evidence-linked comparison of uploaded imagery and historical vegetation greenness.</p>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown("## Choose an analysis")
     mode = st.sidebar.radio(
         "Choose a workflow",
         ("Buildings and infrastructure", "Vegetation history"),
         index=1,
     )
     st.sidebar.caption(
-        "Buildings and infrastructure requires a question plus an aligned before/after RGB pair. "
+        "Buildings and infrastructure requires 2–4 dated, aligned RGB images. "
         "Vegetation history uses a confirmed map area, annual satellite observations and corrected "
         "NDVI processing. The inputs and results are not interchangeable."
     )
