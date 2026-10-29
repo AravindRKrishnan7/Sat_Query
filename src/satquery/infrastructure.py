@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -254,70 +255,257 @@ def infrastructure_request_fingerprint(
     return digest.hexdigest()
 
 
+BUILDING_TERM = r"(?:house|houses|building|buildings|structure|structures|bungalow|bungalows|villa|villas|warehouse|warehouses)"
+ROAD_TERM = r"(?:road|roads|street|streets|path|paths|bypass|bypasses)"
+ADDITION_TERM = r"(?:added|appeared|built|constructed|erected)"
+REMOVAL_TERM = r"(?:demolished|disappeared|removed|vanished)"
+UNSAFE_CAPTION_TERMS = {
+    "answer",
+    "claim",
+    "ignore",
+    "instruction",
+    "instructions",
+    "pretend",
+    "report",
+}
+
+
+def _matches_object_action(text: str, object_term: str, action_term: str) -> bool:
+    object_before = re.search(
+        rf"\b{object_term}\b(?:\s+(?:is|are|was|were|has|have|been)){{0,3}}\s+\b{action_term}\b",
+        text,
+    )
+    action_before = re.search(
+        rf"\b{action_term}\b\s+(?:(?:a|an|the|some|new|additional)\s+)?\b{object_term}\b",
+        text,
+    )
+    return bool(object_before or action_before)
+
+
+def assess_change_caption(raw_caption: str) -> dict[str, Any]:
+    """Extract only conservative direction claims from the model caption."""
+    normalized = " ".join(raw_caption.casefold().split())
+    tokens = set(re.findall(r"[a-z-]+", normalized))
+    unsafe_terms = sorted(tokens & UNSAFE_CAPTION_TERMS)
+    assessment: dict[str, Any] = {
+        "raw_caption": raw_caption,
+        "normalized_caption": normalized,
+        "safe_for_paraphrase": not unsafe_terms,
+        "rejected_terms": unsafe_terms,
+        "no_change": False,
+        "building": {"mentioned": False, "direction": "unclear", "label": "buildings"},
+        "road": {"mentioned": False, "direction": "unclear"},
+    }
+    if not normalized or unsafe_terms:
+        return assessment
+
+    no_change = bool(
+        re.search(r"\b(?:no change|nothing changed|nothing has changed)\b", normalized)
+        or normalized in {"same", "identical", "the same"}
+    )
+    building_mentioned = bool(re.search(rf"\b{BUILDING_TERM}\b", normalized))
+    road_mentioned = bool(re.search(rf"\b{ROAD_TERM}\b", normalized))
+    building_added = building_mentioned and (
+        _matches_object_action(normalized, BUILDING_TERM, ADDITION_TERM)
+        or bool(re.search(rf"\b(?:new|newly|additional)\s+{BUILDING_TERM}\b", normalized))
+    )
+    building_removed = building_mentioned and _matches_object_action(
+        normalized,
+        BUILDING_TERM,
+        REMOVAL_TERM,
+    )
+    road_added = road_mentioned and (
+        _matches_object_action(normalized, ROAD_TERM, ADDITION_TERM)
+        or bool(re.search(rf"\b(?:new|newly|additional)\s+{ROAD_TERM}\b", normalized))
+    )
+    road_removed = road_mentioned and _matches_object_action(
+        normalized,
+        ROAD_TERM,
+        REMOVAL_TERM,
+    )
+
+    def direction(added: bool, removed: bool) -> str:
+        if no_change or (added and removed):
+            return "conflicting" if added or removed else "no_change"
+        if added:
+            return "added"
+        if removed:
+            return "removed"
+        return "unclear"
+
+    assessment["no_change"] = no_change
+    assessment["building"] = {
+        "mentioned": building_mentioned,
+        "direction": direction(building_added, building_removed),
+        "label": "houses" if re.search(r"\bhouses?\b", normalized) else "buildings",
+    }
+    assessment["road"] = {
+        "mentioned": road_mentioned,
+        "direction": direction(road_added, road_removed),
+    }
+    return assessment
+
+
+def _evidence_relationship(mask_present: bool, caption_direction: str) -> str:
+    if caption_direction in {"added", "removed"}:
+        return "agreement" if mask_present else "contradiction"
+    if caption_direction == "no_change":
+        return "contradiction" if mask_present else "agreement"
+    if caption_direction == "conflicting":
+        return "caption_conflicting"
+    return "caption_unclear"
+
+
+def infrastructure_answer_details(
+    interpretation: InfrastructureInterpretation,
+    analysis_record: Mapping[str, Any],
+    before_date: str | None,
+    after_date: str | None,
+) -> dict[str, Any]:
+    """Build ordinary-language prose while retaining an auditable evidence relationship."""
+    distribution = analysis_record["model_outputs"]["mask_class_distribution"]
+    building_present = int(distribution["2"]["pixels"]) > 0
+    road_present = int(distribution["1"]["pixels"]) > 0
+    raw_caption = str(analysis_record["model_outputs"]["caption"].get("text") or "")
+    caption = assess_change_caption(raw_caption)
+    building_caption = caption["building"]
+    road_caption = caption["road"]
+    relationships = {
+        "building": _evidence_relationship(
+            building_present,
+            building_caption["direction"] if caption["safe_for_paraphrase"] else "unclear",
+        ),
+        "road": _evidence_relationship(
+            road_present,
+            road_caption["direction"] if caption["safe_for_paraphrase"] else "unclear",
+        ),
+    }
+    requested = set(interpretation.requested_classes)
+    if interpretation.general_change_requested:
+        requested = {"building_change", "road_change"}
+    if before_date and after_date:
+        period = f" between {before_date} and {after_date}"
+    elif before_date:
+        period = f" after the user-supplied before date {before_date}"
+    elif after_date:
+        period = f" by the user-supplied after date {after_date}"
+    else:
+        period = " between the two images"
+
+    sentences: list[str] = []
+    building_requested = "building_change" in requested
+    road_requested = "road_change" in requested
+    building_direction = building_caption["direction"]
+    road_direction = road_caption["direction"]
+
+    if building_requested and road_requested and not building_present and not road_present:
+        if caption["no_change"] and caption["safe_for_paraphrase"]:
+            sentences.append(f"The model did not identify building or road changes{period}.")
+            sentences.append("No red or yellow change highlights were produced.")
+            sentences.append("The model-generated description also indicates no change.")
+        elif building_direction in {"added", "removed"}:
+            verb = "added" if building_direction == "added" else "removed"
+            label = building_caption["label"]
+            sentences.append(
+                f"The model-generated description suggests {label} were {verb}, but no building changes were highlighted."
+            )
+        else:
+            sentences.append(f"The model did not identify building or road changes{period}.")
+            sentences.append("Its generated description does not provide a clear change explanation.")
+    elif building_requested and building_present:
+        if caption["safe_for_paraphrase"] and building_direction in {"added", "removed"}:
+            verb = "added" if building_direction == "added" else "removed"
+            sentences.append(
+                f"The model suggests that {building_caption['label']} were {verb}{period}."
+            )
+        elif caption["safe_for_paraphrase"] and building_direction == "no_change":
+            sentences.append(
+                "The red highlights indicate building changes, but the model-generated description says no change."
+            )
+        else:
+            sentences.append(f"The model identified building changes{period}.")
+        if not sentences[-1].startswith("The red highlights"):
+            sentences.append("The red highlights show the areas identified as building changes.")
+    elif building_requested:
+        if caption["safe_for_paraphrase"] and building_direction in {"added", "removed"}:
+            verb = "added" if building_direction == "added" else "removed"
+            sentences.append(
+                f"The model-generated description suggests {building_caption['label']} were {verb}, but no building changes were highlighted."
+            )
+        else:
+            sentences.append(f"The model did not identify building changes{period}.")
+
+    if road_requested:
+        if road_present:
+            if caption["safe_for_paraphrase"] and road_direction in {"added", "removed"}:
+                verb = "added" if road_direction == "added" else "removed"
+                sentences.append(f"The model suggests a road was {verb}{period}, shown by yellow highlights.")
+            else:
+                sentences.append(
+                    "Yellow highlights show predicted road changes, but they do not establish that a road was constructed or removed."
+                )
+        elif caption["safe_for_paraphrase"] and road_direction in {"added", "removed"}:
+            verb = "added" if road_direction == "added" else "removed"
+            sentences.append(
+                f"The generated description suggests a road was {verb}, but no road changes were highlighted."
+            )
+        else:
+            sentences.append("It did not detect road changes.")
+
+    has_contradiction = "contradiction" in relationships.values() or (
+        caption["safe_for_paraphrase"] and caption["no_change"] and (building_present or road_present)
+    )
+    if interpretation.instance_count_requested:
+        sentences.append(
+            "This is a model interpretation, and the method cannot reliably count individual new buildings."
+        )
+    elif interpretation.spatial_description_requested:
+        sentences.append(
+            "The overlay shows the highlighted areas, but it does not provide a verified named location."
+        )
+    elif has_contradiction:
+        sentences.append(
+            "The description and highlighted changes disagree, so the change direction is uncertain."
+        )
+    elif not caption["safe_for_paraphrase"]:
+        sentences.append(
+            "This is a model interpretation; the generated description was not used because it was not a clear change statement."
+        )
+    else:
+        sentences.append("This is a model interpretation, not a verified real-world record.")
+
+    # Keep the primary answer compact even when several requested categories need qualification.
+    if len(sentences) > 4:
+        sentences = sentences[:3] + [sentences[-1]]
+    return {
+        "text": " ".join(sentences),
+        "caption_assessment": caption,
+        "evidence_relationship": relationships,
+        "mask_presence": {
+            "building_change": building_present,
+            "road_change": road_present,
+        },
+        "rules": {
+            "caption_scope": "Only conservative building/road addition, removal, or no-change patterns may be paraphrased.",
+            "discarded_claim_types": ["counts", "locations", "dates", "causes"],
+            "spatial_consistency_inferred": False,
+        },
+    }
+
+
 def render_infrastructure_answer(
     interpretation: InfrastructureInterpretation,
     analysis_record: Mapping[str, Any],
     before_date: str | None,
     after_date: str | None,
 ) -> str:
-    """Render checked prose from the MCI class mask and the user's supported intent."""
-    distribution = analysis_record["model_outputs"]["mask_class_distribution"]
-    building_pixels = int(distribution["2"]["pixels"])
-    road_pixels = int(distribution["1"]["pixels"])
-    if before_date and after_date:
-        period = f" between the user-supplied dates {before_date} and {after_date}"
-    elif before_date:
-        period = f" relative to the user-supplied before date {before_date}"
-    elif after_date:
-        period = f" relative to the user-supplied after date {after_date}"
-    else:
-        period = ""
-
-    paragraphs: list[str] = []
-    if interpretation.instance_count_requested:
-        paragraphs.append(
-            "GeoLens cannot provide a validated count of new, added, or removed buildings. "
-            "The current model marks change pixels; it does not detect and temporally match "
-            "individual building instances."
-        )
-
-    requested = set(interpretation.requested_classes)
-    if interpretation.general_change_requested:
-        requested = {"building_change", "road_change"}
-    findings: list[str] = []
-    if "building_change" in requested:
-        findings.append(
-            "areas predicted as building change"
-            if building_pixels
-            else "no pixels predicted as building change"
-        )
-    if "road_change" in requested:
-        findings.append(
-            "areas predicted as road change"
-            if road_pixels
-            else "no pixels predicted as road change"
-        )
-    if len(findings) == 2:
-        finding_text = f"{findings[0]} and {findings[1]}"
-    else:
-        finding_text = findings[0]
-    paragraphs.append(f"For the uploaded aligned pair{period}, the MCI mask shows {finding_text}.")
-
-    if "road_change" in requested and road_pixels:
-        paragraphs.append(
-            "Road-change pixels indicate a model-predicted visual change in that class; they do "
-            "not by themselves establish that a road was newly constructed."
-        )
-    if interpretation.spatial_description_requested:
-        paragraphs.append(
-            "The overlay shows where pixels were marked, but this workflow does not turn them into "
-            "a verified named location or object-level position."
-        )
-    paragraphs.append(
-        "These are model predictions, not verified real-world observations. The raw caption is a "
-        "separate model output and may disagree with the class mask."
-    )
-    return "\n\n".join(paragraphs)
+    """Render checked prose from the mask and conservatively assessed caption."""
+    return infrastructure_answer_details(
+        interpretation,
+        analysis_record,
+        before_date,
+        after_date,
+    )["text"]
 
 
 def write_infrastructure_audit(
@@ -329,12 +517,13 @@ def write_infrastructure_audit(
     """Persist the question, checked answer, model record reference, and limitations."""
     execution_path = Path(analysis_record["outputs"]["execution_record"]).resolve()
     output_directory = execution_path.parent
-    answer_text = render_infrastructure_answer(
+    answer_details = infrastructure_answer_details(
         interpretation,
         analysis_record,
         before_date,
         after_date,
     )
+    answer_text = answer_details["text"]
     answer_path = output_directory / "answer.md"
     audit_path = output_directory / "assistant.json"
     answer_path.write_text(answer_text.rstrip() + "\n", encoding="utf-8")
@@ -357,7 +546,10 @@ def write_infrastructure_audit(
         },
         "answer": {
             "text": answer_text,
-            "source": "deterministic rendering of validated question intent and MCI mask classes",
+            "source": "deterministic rendering of validated question intent, mask categories, and conservatively assessed raw caption",
+        },
+        "answer_validation": {
+            key: value for key, value in answer_details.items() if key != "text"
         },
         "evidence": {
             "before_image": analysis_record["inputs"]["before"]["path"],

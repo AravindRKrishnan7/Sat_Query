@@ -24,26 +24,31 @@ Local `qwen3:8b` extracts a constrained question contract for building change,
 road change, general image change, instance-count requests and requested
 spatial descriptions. Exact source-text evidence is required for every true
 field. The application—not the language model—then renders the answer from
-that validated intent and the recorded MCI mask classes. It never derives
-building counts from connected components, never calls every road-change pixel
-a newly constructed road, and never turns the separate raw caption into a mask
-fact. The before/after views and overlay are prominent; the class mask, raw
-caption, predicted pixel fractions, model record and assistant audit are in
-**View evidence and technical details**.
+that validated intent, the recorded change categories and a conservative
+assessment of the raw caption. Only tightly matched building/road addition,
+removal or no-change phrases may be paraphrased. Quantities, locations, dates,
+causes and instruction-like caption text are discarded. Category and caption
+agreement never establishes spatial consistency. The before/after views and
+overlay are prominent; the raw caption, category counts, assessment,
+disagreement state, model record and assistant audit are in **View evidence and
+technical details**.
 
 The real Streamlit integration-harness run used the pinned 256 × 256 pair and
 the verified CPU checkpoint. The mask contained 6,509 predicted
 building-change pixels, zero road-change pixels and 59,027 background pixels;
-the raw caption was `some houses are built along the road`. The checked answer
-therefore reported predicted building-change areas and no road-change pixels,
-while explicitly warning that the separate caption may disagree. The new mask,
-legend and overlay are byte-for-byte equal to the established
-`outputs/change-agent-cpu` baseline for this pair.
+the raw caption was `some houses are built along the road`. The conservative
+caption assessment recorded building addition, treated `along the road` as
+context rather than a road-change claim, and recorded building/category
+agreement without claiming spatial agreement. The resulting main answer was:
+“The model suggests that houses were added between the two images. The red
+highlights show the areas identified as building changes. It did not detect
+road changes. This is a model interpretation, not a verified real-world
+record.” The new mask, legend and overlay remain unchanged.
 
 - MCI record:
-  `outputs/geolens/construction/run-20261029T034910221606Z-6d10dba04f/run.json`
+  `outputs/geolens/construction/run-20261029T041141443605Z-0862c8c66c/run.json`
 - Assistant record:
-  `outputs/geolens/construction/run-20261029T034910221606Z-6d10dba04f/assistant.json`
+  `outputs/geolens/construction/run-20261029T041141443605Z-0862c8c66c/assistant.json`
 
 ### Vegetation history
 
@@ -70,7 +75,7 @@ output paths and the intentionally revised prose differ.
 
 ### Verification
 
-- All 73 lightweight regression tests pass, including eight focused uploaded-
+- All 79 lightweight regression tests pass, including fourteen focused uploaded-
   infrastructure tests and the preserved MCI, prepared two-date vegetation,
   historical cache/scaling and language-answer suites.
 - The expanded real `ollama/qwen3:8b` compatibility command passes all 13
@@ -197,7 +202,7 @@ Primary references: [Maxar Open Data on AWS](https://registry.opendata.aws/maxar
   request is now in a fallback expander. The readable checked answer remains
   above images and charts; raw plans, pixel populations, provider details and
   machine records remain expandable and downloadable.
-- The full lightweight suite passes 73 tests. Three Streamlit interface tests
+- The full lightweight suite passes 79 tests. Three Streamlit interface tests
   verify workflow availability/default selection, one-time demo confirmation,
   unchanged reruns, and reset invalidation. Existing tests continue to cover
   changed-boundary invalidation, combined intent, missing years, unsupported
@@ -348,7 +353,7 @@ Streamlit reruns do not execute the tool again.
 
 ### Language-interface verification and limitations
 
-- 73 lightweight tests pass. Twenty-seven historical language-interface tests cover unavailable
+- 79 lightweight tests pass. Twenty-seven historical language-interface tests cover unavailable
   service, missing/invented dates, unconfirmed AOI, unsupported construction
   and roads, combined partial planning/execution, preset/application-state AOI
   resolution, conflicting places, boundary invalidation, tool failure, missing
@@ -582,9 +587,9 @@ cause.
 
 ### Historical verification and limitations
 
-- 73 lightweight tests pass: the original construction and two-date
+- 79 lightweight tests pass: the original construction and two-date
   vegetation regressions, eleven historical tests, twenty-seven historical
-  language-interface tests, eight uploaded-infrastructure tests and three
+  language-interface tests, fourteen uploaded-infrastructure tests and three
   focused Streamlit layout/state tests. Historical coverage includes unconfirmed and oversized AOIs,
   stale-state invalidation, invalid dates/request size, unsupported
   construction, scaling representations, cache failure, missing-year
@@ -625,7 +630,10 @@ Buildings and infrastructure:
   latest execution record in session state;
 - displays checked prose, prepared images and overlay first, with the class
   mask, raw unedited caption, predicted pixel fractions, downloads and records
-  in expandable evidence.
+  in expandable evidence;
+- leads with a conservative ordinary-language caption interpretation only when
+  the corresponding change category is present, and surfaces unclear or
+  contradictory evidence rather than selecting one output silently.
 
 Vegetation history retains the map/chat and corrected annual NDVI path. Its
 main prose omits dense metrics while exact values remain in expandable
@@ -641,11 +649,11 @@ result-contract errors in user-facing language.
 
 - Streamlit 1.66.1, Folium 0.20.0 and streamlit-folium 0.27.4 are installed
   only in the project `.venv` and pinned in `requirements.in`.
-- All 73 lightweight tests pass. The local-interface tests cover workflow
+- All 79 lightweight tests pass. The local-interface tests cover workflow
   selection/default state, one-time demo confirmation and reset invalidation, plus bounded
   PNG/JPEG decoding, explicit resizing, RGB rejection, unique run/input paths,
   and execution-record validation; eleven historical, twenty-seven historical
-  language and eight uploaded-infrastructure tests cover the contracts listed
+  language and fourteen uploaded-infrastructure tests cover the contracts listed
   above.
 - Streamlit's integration harness rendered both main workflows without
   exceptions and ran real MCI and exact-AOI cached historical analysis, not

@@ -137,11 +137,6 @@ def _show_construction_result(
 
     st.subheader("GeoLens answer")
     st.markdown(str(audit["answer"]["text"]))
-    st.caption(
-        "The local language model interpreted the question. The application produced this answer "
-        "from the validated intent and recorded MCI mask classes; it did not accept unrestricted "
-        "model-written findings."
-    )
 
     st.subheader("Uploaded image comparison")
     before_path = Path(record["inputs"]["before"]["path"])
@@ -164,8 +159,7 @@ def _show_construction_result(
     )
 
     st.markdown(
-        "**Overlay legend:** transparent = predicted background; yellow = predicted road-change "
-        "pixels; red = predicted building-change pixels."
+        "**Overlay legend:** Red: predicted building changes. Yellow: predicted road changes."
     )
     st.caption(
         "The overlay is a model prediction on a caller-supplied aligned pair. It is not a verified "
@@ -173,6 +167,15 @@ def _show_construction_result(
     )
 
     with st.expander("View evidence and technical details"):
+        st.markdown("**How the answer was produced and checked**")
+        st.write(
+            "The local language model extracted the question intent only. The application combined "
+            "the recorded change categories with a conservative assessment of the separate raw "
+            "caption. Only explicit building/road addition, removal, or no-change phrases may be "
+            "paraphrased; counts, locations, dates and causes are discarded. Category agreement "
+            "does not imply that the caption and highlighted regions are spatially consistent."
+        )
+        st.json(audit.get("answer_validation", {}))
         st.image(
             str(outputs["color_mask_with_legend"]),
             caption="Predicted class mask with embedded legend",
@@ -193,8 +196,9 @@ def _show_construction_result(
         st.markdown("**Raw model caption**")
         st.code(record["model_outputs"]["caption"]["text"] or "[empty]", language=None)
         st.caption(
-            "Caption repetitions are preserved exactly. The caption is an unverified output from "
-            "a separate model head and may disagree with the mask."
+            "The downloadable raw caption is preserved exactly. The main answer may remove "
+            "repetition or conservatively paraphrase it, but the caption remains an unverified "
+            "output from a separate model head and may disagree with the change categories."
         )
         download_columns = st.columns(3)
         with download_columns[0]:
