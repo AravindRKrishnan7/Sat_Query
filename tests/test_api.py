@@ -295,6 +295,92 @@ class ApiContractTests(unittest.TestCase):
             plan["plan"]["boundary_resolution"]["source"], "application_state"
         )
 
+    def test_vegetation_preset_is_validated_and_does_not_run_analysis(self) -> None:
+        self.assertFalse(self.service.historical_output_root.exists())
+        plans_before = dict(self.service._plans)
+        jobs_before = dict(self.service._jobs)
+
+        response = self.client.get("/api/vegetation/preset")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        context = response.json()
+        self.assertEqual(context["area"]["label"], "Alappuzha demo area")
+        self.assertEqual(
+            context["area"]["bounds_wgs84"], [76.34, 9.48, 76.36, 9.5]
+        )
+        self.assertAlmostEqual(context["area"]["area_square_km"], 4.88, places=2)
+        self.assertEqual(
+            context["boundary_source"], "backend_validated_demo_preset"
+        )
+        self.assertEqual(context["preview_status"], "unavailable")
+        self.assertFalse(context["analysis_performed"])
+        self.assertFalse(context["retrieval_performed"])
+        self.assertEqual(self.service._plans, plans_before)
+        self.assertEqual(self.service._jobs, jobs_before)
+        self.assertFalse(self.service.historical_output_root.exists())
+
+    def test_vegetation_preset_exposes_only_matching_saved_preview(self) -> None:
+        mismatched = self.service.historical_output_root / "run-mismatch"
+        mismatched.mkdir(parents=True)
+        mismatch_image = mismatched / "wrong-area.png"
+        mismatch_image.write_bytes(_png((230, 20, 20)))
+        (mismatched / "run.json").write_text(
+            json.dumps(
+                {
+                    "request": {"aoi": {"bounds_wgs84": [76.0, 9.0, 76.02, 9.02]}},
+                    "annual_observations": [
+                        {
+                            "year": 2026,
+                            "status": "available",
+                            "acquisition_date": "2026-01-01",
+                            "outputs": {"true_color_png": str(mismatch_image)},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        matching = self.service.historical_output_root / "run-matching"
+        matching.mkdir()
+        matching_image = matching / "2025-true-colour.png"
+        matching_image.write_bytes(_png((20, 120, 40)))
+        matching_record = matching / "run.json"
+        matching_record.write_text(
+            json.dumps(
+                {
+                    "request": {
+                        "aoi": {"bounds_wgs84": [76.34, 9.48, 76.36, 9.5]}
+                    },
+                    "annual_observations": [
+                        {
+                            "year": 2025,
+                            "status": "available",
+                            "acquisition_date": "2025-01-17",
+                            "outputs": {"true_color_png": str(matching_image)},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        response = self.client.get("/api/vegetation/preset")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        preview = response.json()["preview"]
+        self.assertEqual(preview["acquisition_date"], "2025-01-17")
+        self.assertEqual(
+            preview["label"],
+            "Previous saved observation; not an input to the pending analysis",
+        )
+        image_response = self.client.get(preview["image_url"])
+        self.assertEqual(image_response.status_code, 200)
+        self.assertEqual(image_response.content, matching_image.read_bytes())
+        record_response = self.client.get(preview["source_record_url"])
+        self.assertEqual(record_response.status_code, 200)
+        self.assertEqual(json.loads(record_response.text)["request"]["aoi"]["bounds_wgs84"], [76.34, 9.48, 76.36, 9.5])
+
     def test_oversized_custom_vegetation_area_is_rejected(self) -> None:
         response = self.client.post(
             "/api/vegetation/plans",

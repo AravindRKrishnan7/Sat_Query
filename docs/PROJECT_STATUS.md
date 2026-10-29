@@ -49,6 +49,43 @@ choice, endpoint choice or confirmed bounds clears the displayed plan/result.
 Follow-ups and exports require the active completed analysis ID and do not
 submit another analysis job.
 
+### React scrolling and vegetation entry context
+
+The initial imported layout constrained `.workspace` to `100vh` with hidden
+overflow while both the chat and evidence columns introduced their own
+vertical scroll areas. On desktop this clipped the bottom of long answers,
+expanded evidence and downloads and made page scrolling depend on which
+nested panel had focus. The workspace now grows with its content and uses the
+browser document as the single main-content scroll area. Chat and evidence
+columns have `min-height: 0` but visible overflow; only the sticky desktop
+sidebar retains an independent bounded scrollbar for its own navigation. The
+narrow layout keeps its bottom navigation and page padding without imposing
+artificial 600/720-pixel panel heights. Bounded content that genuinely needs
+independent scrolling, such as the report dialog and technical preformatted
+records, remains bounded.
+
+Entering **Vegetation history** now makes one read-only request to
+`GET /api/vegetation/preset`. The response comes from the same
+`DEMO_BOUNDS`/`confirm_aoi` validation used by historical plans and reports the
+exact `[76.34, 9.48, 76.36, 9.50]` west/south/east/north rectangle, the
+**Alappuzha demo area** label and calculated 4.8780529147062 km² area. The
+frontend contains no duplicate preset constant. It renders the confirmed
+rectangle over an OpenStreetMap context basemap before a question is planned;
+if tiles fail, the geographic grid, rectangle, bounds and a readable warning
+remain. The basemap is explicitly contextual and is not presented as dated
+analysis imagery.
+
+The preset endpoint performs no interpretation, plan creation, retrieval,
+cache population or analysis. It may read the newest existing historical
+record only when its AOI exactly matches the validated preset and then exposes
+that record's latest saved true-colour PNG through the analysis-scoped
+artifact registry. The current local response exposes the saved 2025-01-17
+observation and labels it as a previous observation that is not an input to
+the pending analysis. With no match, the rectangle remains visible and the UI
+states that imagery will appear after retrieval. Custom bounds remain a draft
+until backend validation; changing bounds, area mode or question still clears
+the active plan and result.
+
 ### Real adapter verification
 
 The real infrastructure API run
@@ -86,23 +123,29 @@ rerun by follow-up or export.
 
 Verification on 2026-10-30:
 
-- all 117 Python regression, API-contract and frontend-contract tests pass;
-- nine focused API tests cover exact CORS, chronological plan identity,
+- all 121 Python regression, API-contract and frontend-contract tests pass;
+- eleven focused API tests cover exact CORS, chronological plan identity,
   duplicate-date/alignment rejection, stale-input identity, one-shot jobs,
   partial results, analysis-scoped artifacts, validated demo bounds, oversized
-  AOI rejection, grounded follow-up and saved-result report export;
-- three focused frontend tests reject simulated result code and Figma runtime
-  plugins, and verify the locked localhost npm/Vite contract;
+  AOI rejection, grounded follow-up, saved-result report export, read-only
+  preset loading and exact-AOI saved-preview selection;
+- five focused frontend tests reject simulated result code and Figma runtime
+  plugins, verify the locked localhost npm/Vite contract, enforce the
+  single-main-scroll layout and require the backend-sourced map/fallback;
 - `npm run build` succeeds with Node 25.5.0 and npm 11.8.0 against the declared
   Node 22.12+/npm 10+ contract, producing the ordinary Vite production bundle;
-- the loopback API health check, provider discovery and frontend HTTP startup
-  pass at ports 8010 and 5173;
+- the restarted loopback API returned the exact validated preset and matching
+  2025-01-17 saved preview at port 8010. Repeated entry requests left the
+  historical output file count unchanged at 771, confirming no page-load
+  analysis or retrieval. The frontend development server remains available at
+  port 5173;
 - the preserved Streamlit integration tests still pass and the fallback launch
   command remains unchanged;
 - the browser-control surface reported that no browser was available. Visible
-  browser interaction and responsive visual inspection are therefore not
-  claimed; production build, HTTP startup, real API execution and Streamlit's
-  integration harness are reported separately.
+  desktop/narrow scrolling, tile rendering, expanded-evidence layout and
+  slider interaction are therefore not claimed; source-level responsive
+  contracts, production build, HTTP startup, real API execution and
+  Streamlit's integration harness are reported separately.
 
 Remaining limitations: plans/jobs are process-local and are not rehydrated
 after an API restart; there is no authentication, database, multi-user

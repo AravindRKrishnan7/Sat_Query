@@ -20,8 +20,29 @@ type UploadObservation = {
   preview: string | null
 }
 
+type ConfirmedArea = {
+  label: string
+  bounds_wgs84: number[]
+  area_square_km: number
+}
+
+type PresetContext = {
+  area: ConfirmedArea
+  boundary_source: string
+  preview: null | {
+    year: number
+    acquisition_date: string
+    image_url: string
+    source_record_url: string
+    label: string
+  }
+  preview_status: "matching_saved_observation" | "unavailable"
+  preview_unavailable_reason: string | null
+  analysis_performed: false
+  retrieval_performed: false
+}
+
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8010").replace(/\/$/, "")
-const DEMO_BOUNDS = [76.34, 9.48, 76.36, 9.5]
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init)
@@ -36,6 +57,64 @@ function asset(path?: string | null) {
 
 function newObservation(): UploadObservation {
   return { id: crypto.randomUUID(), file: null, date: "", preview: null }
+}
+
+function worldPixel(longitude: number, latitude: number, zoom: number) {
+  const scale = 256 * 2 ** zoom
+  const clamped = Math.max(-85.05112878, Math.min(85.05112878, latitude))
+  const radians = clamped * Math.PI / 180
+  return {
+    x: (longitude + 180) / 360 * scale,
+    y: (1 - Math.log(Math.tan(radians) + 1 / Math.cos(radians)) / Math.PI) / 2 * scale,
+  }
+}
+
+function GeographicMap({ area }: { area: ConfirmedArea }) {
+  const [tilesFailed, setTilesFailed] = useState(false)
+  const zoom = 14
+  const [west, south, east, north] = area.bounds_wgs84
+  const center = worldPixel((west + east) / 2, (south + north) / 2, zoom)
+  const northWest = worldPixel(west, north, zoom)
+  const southEast = worldPixel(east, south, zoom)
+  const centerTileX = Math.floor(center.x / 256)
+  const centerTileY = Math.floor(center.y / 256)
+  const tiles = useMemo(() => {
+    const values: { x: number; y: number; left: number; top: number }[] = []
+    for (let y = centerTileY - 2; y <= centerTileY + 2; y += 1) {
+      for (let x = centerTileX - 2; x <= centerTileX + 2; x += 1) {
+        values.push({ x, y, left: x * 256 - center.x, top: y * 256 - center.y })
+      }
+    }
+    return values
+  }, [center.x, center.y, centerTileX, centerTileY])
+  useEffect(() => setTilesFailed(false), [west, south, east, north])
+  return <figure className={`geographic-map ${tilesFailed ? "tiles-failed" : ""}`} aria-label={`Map of ${area.label} with confirmed rectangle`}>
+    <div className="map-tile-layer" aria-hidden="true">
+      {tiles.map((tile) => <img
+        key={`${tile.x}-${tile.y}`}
+        src={`https://tile.openstreetmap.org/${zoom}/${tile.x}/${tile.y}.png`}
+        alt=""
+        loading="lazy"
+        onError={() => setTilesFailed(true)}
+        style={{ left: `calc(50% + ${tile.left}px)`, top: `calc(50% + ${tile.top}px)` }}
+      />)}
+    </div>
+    <div
+      className="confirmed-rectangle"
+      aria-hidden="true"
+      style={{
+        left: `calc(50% + ${northWest.x - center.x}px)`,
+        top: `calc(50% + ${northWest.y - center.y}px)`,
+        width: `${southEast.x - northWest.x}px`,
+        height: `${southEast.y - northWest.y}px`,
+      }}
+    ><span>{area.label}</span></div>
+    {tilesFailed && <div className="map-tile-error"><Icon name="info" /><span>Basemap tiles are unavailable. The confirmed rectangle and exact bounds remain shown.</span></div>}
+    <figcaption>
+      <span>Basemap: © OpenStreetMap contributors · geographic context only</span>
+      <strong>W/S/E/N: {area.bounds_wgs84.join(", ")}</strong>
+    </figcaption>
+  </figure>
 }
 
 function Icon({ name }: { name: "spark" | "building" | "leaf" | "plus" | "check" | "report" | "send" | "info" | "download" }) {
@@ -221,7 +300,9 @@ function Infrastructure() {
 function Vegetation() {
   const [question, setQuestion] = useState("Compare vegetation from 2021 to 2025.")
   const [custom, setCustom] = useState(false)
-  const [bounds, setBounds] = useState<number[]>(DEMO_BOUNDS)
+  const [bounds, setBounds] = useState<number[]>([])
+  const [preset, setPreset] = useState<PresetContext | null>(null)
+  const [presetError, setPresetError] = useState<string | null>(null)
   const [plan, setPlan] = useState<any>(null)
   const [job, setJob] = useState<Job | null>(null)
   const [busy, setBusy] = useState(false)
@@ -229,6 +310,20 @@ function Vegetation() {
   const [selectedYear, setSelectedYear] = useState<number | null>(null)
   const [selectedDifference, setSelectedDifference] = useState("")
   const invalidate = () => { setPlan(null); setJob(null); setError(null) }
+  useEffect(() => {
+    let active = true
+    api<PresetContext>("/api/vegetation/preset")
+      .then((context) => {
+        if (!active) return
+        setPreset(context)
+        setBounds((current) => current.length === 4 ? current : context.area.bounds_wgs84)
+        setPresetError(null)
+      })
+      .catch((caught) => {
+        if (active) setPresetError((caught as Error).message)
+      })
+    return () => { active = false }
+  }, [])
   async function validate() {
     setBusy(true); setError(null)
     try {
@@ -246,25 +341,31 @@ function Vegetation() {
   const observation = available.find((item: any) => item.year === selectedYear) || available[0]
   const differences = result?.differences || []
   const difference = differences.find((item: any) => item.label === selectedDifference) || differences[0]
+  const confirmedArea: ConfirmedArea | null = result
+    ? { label: result.area_label, ...result.area }
+    : plan?.area || (!custom ? preset?.area : null) || null
+  const mapArea: ConfirmedArea | null = confirmedArea
   useEffect(() => { if (available.length && selectedYear === null) setSelectedYear(available[0].year) }, [available.length, selectedYear])
   useEffect(() => { if (differences.length && !selectedDifference) setSelectedDifference(differences[0].label) }, [differences.length, selectedDifference])
   return <main className="workspace"><Header title="Vegetation history" subtitle="Validated historical Sentinel-2 greenness analysis" />
     <div className="workspace-grid vegetation-grid">
       <section className="chat-panel form-panel"><div className="chat-scroll">
         <span className="card-kicker">1 · Confirmed area</span>
-        <div className="area-card"><div><strong>{custom ? "Custom confirmed area" : "Alappuzha demo area"}</strong><small>WGS84 [{bounds.join(", ")}]</small></div><span>≈ {custom ? "validated at planning" : "4.878 km²"}</span></div>
-        <details className="technical"><summary>Use a custom rectangle</summary><p>Enter west, south, east and north. The same server-side area validator and 25 km² limit apply.</p><label className="check-control"><input type="checkbox" checked={custom} onChange={(event) => { invalidate(); setCustom(event.target.checked); if (!event.target.checked) setBounds(DEMO_BOUNDS) }} /><span><strong>Use custom confirmed bounds</strong></span></label>{custom && <div className="bounds-grid">{["West", "South", "East", "North"].map((label, index) => <label key={label}><span>{label}</span><input type="number" step="0.0001" value={bounds[index]} onChange={(event) => { invalidate(); setBounds((current) => current.map((value, position) => position === index ? Number(event.target.value) : value)) }} /></label>)}</div>}</details>
+        {presetError && <ErrorNotice message={`The validated preset could not be loaded: ${presetError}`} />}
+        {confirmedArea ? <div className="area-card"><div><strong>{confirmedArea.label}</strong><small>WGS84 [{confirmedArea.bounds_wgs84.join(", ")}] · west, south, east, north</small></div><span>≈ {confirmedArea.area_square_km.toFixed(3)} km²</span></div> : <div className="area-card loading"><div><strong>{custom ? "Custom bounds draft" : "Loading validated preset…"}</strong><small>{custom && bounds.length === 4 ? `WGS84 [${bounds.join(", ")}]` : "Waiting for the local API"}</small></div></div>}
+        <p className="boundary-confirmation">{plan ? "Confirmed by the backend. This exact boundary is recorded in the reviewed plan." : custom ? "This is a draft. Validate the request before it can be used by a plan." : preset ? "Confirmed by the backend preset. The next plan will use this exact rectangle." : "No boundary will be used until the backend confirms it."}</p>
+        <details className="technical"><summary>Use a custom rectangle</summary><p>Enter west, south, east and north. The same server-side area validator and 25 km² limit apply.</p><label className="check-control"><input type="checkbox" checked={custom} onChange={(event) => { invalidate(); setCustom(event.target.checked); if (!event.target.checked && preset) setBounds(preset.area.bounds_wgs84) }} /><span><strong>Use custom bounds</strong></span></label>{custom && <div className="bounds-grid">{["West", "South", "East", "North"].map((label, index) => <label key={label}><span>{label}</span><input type="number" step="0.0001" value={bounds[index] ?? ""} onChange={(event) => { invalidate(); setBounds((current) => [0, 1, 2, 3].map((position) => position === index ? Number(event.target.value) : current[position])) }} /></label>)}</div>}</details>
         <span className="card-kicker">2 · Ask and review</span>
         <label className="field"><span>What would you like to compare?</span><textarea value={question} onChange={(event) => { invalidate(); setQuestion(event.target.value) }} maxLength={2000} /></label>
-        <button className="primary-button full" onClick={validate} disabled={busy || !question.trim()}>{busy ? "Validating…" : "Validate request"}</button>
+        <button className="primary-button full" onClick={validate} disabled={busy || !question.trim() || (!custom && !preset) || bounds.length !== 4}>{busy ? "Validating…" : "Validate request"}</button>
         <ErrorNotice message={error} />
         {plan && !job && <div className="assistant-card"><span className="card-kicker">Validated plan · {plan.status}</span><p>{plan.summary}</p>{plan.status === "validated" ? <button className="primary-button full" onClick={run} disabled={busy}>Run historical analysis</button> : <div className="caution"><Icon name="info" /><span>This plan cannot run until the displayed request issue is resolved.</span></div>}<details className="technical"><summary>Plan evidence</summary><pre>{JSON.stringify(plan.plan, null, 2)}</pre></details></div>}
         {job && ["queued", "running"].includes(job.status) && <Progress job={job} />}
         {job?.status === "failed" && <ErrorNotice message={job.error || "Analysis failed"} />}
         {result && <><div className="answer-card vegetation-answer"><div className="answer-heading"><Icon name="spark" /><span><strong>GeoLens answer</strong><small>{result.answer_validation.fallback_used ? "Checked deterministic fallback" : "Validated constrained claims"}</small></span></div><p className="answer-text">{result.answer}</p><div className="caution"><Icon name="info" /><span>NDVI is related to vegetation greenness; it does not establish tree counts, vegetation-covered area, plant health or cause.</span></div></div><FollowUps analysisId={result.analysis_id} comparisonId={difference?.label} /><details className="technical"><summary>View evidence and technical details</summary><p>Available years: {result.available_years.join(", ") || "none"}. Missing years: {result.missing_years.join(", ") || "none"}.</p><div className="download-row"><DownloadLink href={result.answer_url}>Answer</DownloadLink><DownloadLink href={result.record_url}>Analysis record</DownloadLink><DownloadLink href={result.assistant_record_url}>Assistant record</DownloadLink></div></details><ReportAction analysisId={result.analysis_id} /></>}
       </div></section>
-      <section className="evidence-panel vegetation-map-panel"><div className="panel-heading"><div><span className="panel-kicker">Evidence</span><h2>{result ? result.area_label : "Alappuzha demo area"}</h2></div>{job && <span className={`status-badge ${job.status}`}>{job.status}</span>}</div>
-        {!result && <div className="confirmed-map"><div className="bounds-shape"><span>Confirmed analysis rectangle</span></div><div><strong>West {bounds[0]} · East {bounds[2]}</strong><small>South {bounds[1]} · North {bounds[3]}</small></div></div>}
+      <section className="evidence-panel vegetation-map-panel"><div className="panel-heading"><div><span className="panel-kicker">Area and evidence</span><h2>{mapArea?.label || "Waiting for confirmed area"}</h2></div>{job && <span className={`status-badge ${job.status}`}>{job.status}</span>}</div>
+        {!result && <>{mapArea ? <GeographicMap area={mapArea} /> : <div className="map-loading">{custom ? "Validate the custom bounds to confirm and map the next analysis area." : "Loading the backend-validated Alappuzha boundary…"}</div>}{!custom && preset?.preview ? <figure className="saved-preview"><img src={asset(preset.preview.image_url)} alt={`Previous true-colour observation from ${preset.preview.acquisition_date}`} /><figcaption><span><strong>Previous saved observation · {preset.preview.acquisition_date}</strong>{preset.preview.label}</span><DownloadLink href={preset.preview.source_record_url}>Source record</DownloadLink></figcaption></figure> : !custom && preset && <div className="preview-unavailable"><Icon name="info" /><span>{preset.preview_unavailable_reason}</span></div>}</>}
         {result && <><div className="year-strip">{result.observations.map((item: any) => <button key={item.year} disabled={item.status !== "available"} className={observation?.year === item.year ? "active" : ""} onClick={() => setSelectedYear(item.year)}><span>{item.year}</span><small>{item.status === "available" ? item.acquisition_date : "Unavailable"}</small></button>)}</div>{observation && <div className="side-view real-images"><figure><img src={asset(observation.true_color_url)} alt={`True-colour observation ${observation.year}`} /><figcaption>{observation.acquisition_date} · true colour</figcaption></figure><figure><img src={asset(observation.ndvi_url)} alt={`NDVI ${observation.year}`} /><figcaption>{observation.acquisition_date} · NDVI</figcaption></figure></div>}<h3>NDVI differences</h3><div className="interval-tabs">{differences.map((item: any) => <button key={item.label} className={difference?.label === item.label ? "active" : ""} onClick={() => setSelectedDifference(item.label)}>{item.before_year} → {item.after_year}</button>)}</div>{difference?.status === "available" ? <figure className="overlay-figure"><img src={asset(difference.difference_url)} alt={`NDVI difference ${difference.before_year} to ${difference.after_year}`} /><figcaption>Blue: NDVI increased · Red: decreased · White: little difference · Grey: excluded</figcaption></figure> : difference && <div className="caution"><Icon name="info" /><span>{difference.reason}</span></div>}</>}
       </section>
     </div>

@@ -131,6 +131,13 @@ def create_app(service: GeoLensApiService | None = None) -> FastAPI:
         except (ApiServiceError, ValueError) as exc:
             raise translate_error(exc) from exc
 
+    @app.get("/api/vegetation/preset")
+    def vegetation_preset() -> dict[str, Any]:
+        try:
+            return runtime.vegetation_preset()
+        except (ApiServiceError, ValueError, OSError) as exc:
+            raise translate_error(exc) from exc
+
     @app.get("/api/plans/{analysis_id}")
     def get_plan(analysis_id: str) -> dict[str, Any]:
         try:

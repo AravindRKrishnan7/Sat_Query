@@ -300,6 +300,71 @@ class GeoLensApiService:
             }
         return public
 
+    def vegetation_preset(self) -> dict[str, Any]:
+        """Return validated preset context and an optional matching saved preview.
+
+        This is intentionally read-only: it does not create a plan, run the
+        historical engine, query the provider, or populate the raster cache.
+        """
+        aoi = confirm_aoi(DEMO_BOUNDS)
+        context_id = "vegetation-preset"
+        preview: dict[str, Any] | None = None
+        if self.historical_output_root.is_dir():
+            records = sorted(
+                self.historical_output_root.glob("run-*/run.json"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            for record_path in records:
+                try:
+                    record = json.loads(record_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                stored_bounds = record.get("request", {}).get("aoi", {}).get("bounds_wgs84")
+                if not isinstance(stored_bounds, list) or len(stored_bounds) != 4:
+                    continue
+                if tuple(round(float(value), 8) for value in stored_bounds) != aoi.bounds:
+                    continue
+                candidates = [
+                    item
+                    for item in record.get("annual_observations", [])
+                    if item.get("status") == "available"
+                    and item.get("acquisition_date")
+                    and item.get("outputs", {}).get("true_color_png")
+                ]
+                candidates.sort(key=lambda item: str(item["acquisition_date"]), reverse=True)
+                for observation in candidates:
+                    image_path = Path(observation["outputs"]["true_color_png"]).resolve()
+                    if not image_path.is_file() or not image_path.is_relative_to(record_path.parent):
+                        continue
+                    image_id = self._register_artifact(context_id, image_path, image_path.name)
+                    record_id = self._register_artifact(context_id, record_path, record_path.name)
+                    preview = {
+                        "year": observation.get("year"),
+                        "acquisition_date": observation["acquisition_date"],
+                        "image_url": self.artifact_url(context_id, image_id),
+                        "source_record_url": self.artifact_url(context_id, record_id),
+                        "label": "Previous saved observation; not an input to the pending analysis",
+                    }
+                    break
+                if preview is not None:
+                    break
+        return {
+            "area": {"label": DEMO_AOI_LABEL, **aoi.record()},
+            "boundary_source": "backend_validated_demo_preset",
+            "preview": preview,
+            "preview_status": (
+                "matching_saved_observation" if preview is not None else "unavailable"
+            ),
+            "preview_unavailable_reason": (
+                None
+                if preview is not None
+                else "No matching saved true-colour observation is available. Imagery will appear after retrieval and analysis."
+            ),
+            "analysis_performed": False,
+            "retrieval_performed": False,
+        }
+
     def plan(self, analysis_id: str) -> dict[str, Any]:
         with self._lock:
             plan = self._plans.get(analysis_id)
