@@ -17,9 +17,69 @@ processing. A separate, constrained local language-model layer may interpret a
 request and explain validated tool results; it does not calculate or alter
 reflectance, masks, NDVI, retrieval or model predictions.
 
-## Launch GeoLens locally
+## Launch the separate React frontend
 
-GeoLens is the local Streamlit interface around those existing analysis paths.
+The `figma-frontend-integration` branch contains a React 19, TypeScript, Vite
+and Tailwind frontend under `frontend/`. Its visual layout was imported from a
+Figma prototype, but its Figma deployment plugins, embedded repository
+instructions, root Git files, simulated timers, fabricated metrics and sample
+answers were not imported into the running application. The frontend now uses
+the existing Python analysis modules through a thin loopback-only FastAPI
+adapter. It does not call Streamlit as an API and does not duplicate MCI, NDVI,
+request-validation, answer, follow-up or report calculations.
+
+Prerequisites are the same Python environment, model assets, local Ollama
+`qwen3:8b` service and cached/accessible satellite data described below, plus
+Node.js 22.12 or later and npm 10 or later. Install dependencies once:
+
+```sh
+.venv/bin/python -m pip install -r requirements.in
+cd frontend
+npm install
+cd ..
+```
+
+Start the backend from the repository root. Port 8010 is used because port 8000
+may already belong to another local application:
+
+```sh
+PYTHONPATH=src .venv/bin/python -m uvicorn satquery.api:app \
+  --host 127.0.0.1 \
+  --port 8010
+```
+
+In a second terminal, start the frontend:
+
+```sh
+cd frontend
+npm run dev
+```
+
+Open [http://127.0.0.1:5173](http://127.0.0.1:5173). The API is available only
+at `http://127.0.0.1:8010`; CORS accepts only the configured local frontend
+origin, which defaults to `http://127.0.0.1:5173`.
+
+The infrastructure path validates two to four bounded PNG/JPEG uploads,
+user-supplied unique dates, optional explicit resizing, endpoint policy and the
+alignment confirmation before returning a reviewable plan. A separate Run
+action submits the existing consecutive-pair MCI workflow to one background
+CPU worker. The vegetation path validates the Alappuzha preset (or bounded
+numeric custom rectangle), natural-language request and tool plan before its
+separate Run action uses the existing exact-AOI historical engine. Both paths
+poll real job state, display only registered artifacts for that analysis ID,
+retain partial comparison failures, and bind grounded follow-ups and reports
+to the completed saved record. Changing any active frontend input clears the
+displayed plan and result.
+
+Local plan/job state is intentionally in memory for this prototype. A backend
+restart requires a new plan even though prior ignored output directories remain
+on disk. There is no authentication, database, multi-user isolation or public
+deployment. The React custom-area control is numeric; the preserved Streamlit
+fallback remains the interface with interactive rectangle drawing.
+
+## Launch the Streamlit fallback locally
+
+GeoLens also retains the working Streamlit interface around those existing analysis paths.
 It supports a loopback-only Ollama request interface but adds no agent
 framework, authentication, database, cloud language-model dependency, or
 public deployment.

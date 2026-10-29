@@ -1,6 +1,6 @@
 # Project status
 
-Status verified on 2026-10-29. The working implementation has two independent
+Status verified on 2026-10-30. The working implementation has two independent
 analysis paths: Change-Agent RGB inference and deterministic Sentinel-2
 Level-2A NDVI processing. GeoLens now exposes exactly two user-facing
 workflows: **Buildings and infrastructure** and **Vegetation history**. The
@@ -9,6 +9,109 @@ but is no longer a separate main-selector choice. Neither NDVI workflow uses an
 AI model for its calculations. A separate local language-model layer interprets
 requests and selects validated result statements without changing either
 analysis path.
+
+## Separate React frontend integration
+
+The working Streamlit demo was frozen before integration at commit
+`24f3fcd9acc11094d14b5cb36fd828f5911c5c60` with the annotated local tag
+`geolens-streamlit-demo-baseline-20261029`. Integration is isolated on the
+local branch `figma-frontend-integration`; neither the tag nor branch has been
+pushed.
+
+The attached Figma prototype was inspected as source material, not repository
+instructions. Only its React/TypeScript application assets and favicon were
+imported under `frontend/`. Its embedded `AGENTS.md`, `.figma` deployment
+directory, root Git attributes/ignore files, Figma-specific Vite plugins and
+pnpm toolchain settings were excluded. The local build uses a small ordinary
+Vite configuration with React and Tailwind, a locked npm dependency graph, no
+remote font dependency, and localhost port 5173. The active React views no
+longer contain simulated progress timers, generated satellite tiles, fixed
+metrics or predefined findings.
+
+`satquery.api` is a thin FastAPI surface over the existing reusable modules.
+It binds only when explicitly launched on loopback, restricts CORS to the
+configured `http://127.0.0.1:5173` origin, validates uploads/dates/AOI/settings
+server-side, and sends CPU work to one bounded background worker. The API does
+not import or call Streamlit. Infrastructure calls the unchanged timeline,
+MCI, caption-grounding and report functions; vegetation calls the unchanged
+request interpretation, tool plan, exact-AOI historical engine, checked answer
+and report functions. The API maintains process-local plan/job state and an
+analysis-scoped artifact registry. An artifact URL cannot name an arbitrary
+path or retrieve a file registered to another analysis.
+
+The React interface now implements separate Validate/review and Run actions,
+real queued/running/completed progress, two-to-four image chronology,
+independent endpoint policy, partial comparison failures, actual saved imagery
+and overlays, validated Alappuzha planning, annual true-colour/NDVI evidence,
+missing-year warnings, constrained follow-ups, execution-record downloads and
+illustrated report export. Changing a question, image, date, preparation
+choice, endpoint choice or confirmed bounds clears the displayed plan/result.
+Follow-ups and exports require the active completed analysis ID and do not
+submit another analysis job.
+
+### Real adapter verification
+
+The real infrastructure API run
+`outputs/geolens/api/infrastructure-20261029T173608Z-8f04a49688/timeline.json`
+used the repository's 1254 × 1254 `before.png` and `after.png` through the
+existing explicit Lanczos preparation path with artificial user-supplied dates
+2024-01-01 and 2025-01-01. Original SHA-256 values were `978ca821…d3eca` and
+`104d7387…925d1`; prepared SHA-256 values were `30a62df0…f2a6` and
+`05ba72da…bf89`. Real CPU MCI reproduced the established result: 62,871
+background pixels, zero road-change pixels and 2,665 building-change pixels,
+with raw caption `some houses are built on the bareland on the bareland`. The
+checked answer suggested houses were added, identified the red building-change
+highlights, reported no detected road changes and retained the model-prediction
+qualification. These dates are supplied demonstration labels, not verified
+image acquisition dates.
+
+The real vegetation API run
+`outputs/geolens/historical/run-20261029T173714123646Z-b900fbfe8f/run.json`
+validated the exact Alappuzha preset and request `Compare vegetation from 2021
+to 2025.` through local `ollama/qwen3:8b`. It loaded all 20 selected windows
+from the matching exact-AOI cache and retrieved zero. The historical engine
+finished in 0.61 seconds and reproduced the established available years 2021,
+2023, 2024 and 2025, missing year 2022, 37,316 common-valid pixels and all
+common-trend/adjacent/endpoint numerical fields after output-path fields were
+excluded. The common-valid GeoTIFF SHA-256 remained byte-identical to the
+prior baseline: `fc28c165af8c9a1c02fd2137b49fd62455c94b06530a96a8883a471d8efb65ac`.
+The constrained claim plan passed without fallback.
+
+Real grounded follow-ups correctly withheld a building count and explained
+the missing 2022 vegetation observation. Illustrated infrastructure and
+vegetation PDFs were built from saved results. SHA-256 checks before and after
+export showed that neither parent execution record, child MCI record,
+historical execution record nor common-valid mask changed; no analysis was
+rerun by follow-up or export.
+
+Verification on 2026-10-30:
+
+- all 117 Python regression, API-contract and frontend-contract tests pass;
+- nine focused API tests cover exact CORS, chronological plan identity,
+  duplicate-date/alignment rejection, stale-input identity, one-shot jobs,
+  partial results, analysis-scoped artifacts, validated demo bounds, oversized
+  AOI rejection, grounded follow-up and saved-result report export;
+- three focused frontend tests reject simulated result code and Figma runtime
+  plugins, and verify the locked localhost npm/Vite contract;
+- `npm run build` succeeds with Node 25.5.0 and npm 11.8.0 against the declared
+  Node 22.12+/npm 10+ contract, producing the ordinary Vite production bundle;
+- the loopback API health check, provider discovery and frontend HTTP startup
+  pass at ports 8010 and 5173;
+- the preserved Streamlit integration tests still pass and the fallback launch
+  command remains unchanged;
+- the browser-control surface reported that no browser was available. Visible
+  browser interaction and responsive visual inspection are therefore not
+  claimed; production build, HTTP startup, real API execution and Streamlit's
+  integration harness are reported separately.
+
+Remaining limitations: plans/jobs are process-local and are not rehydrated
+after an API restart; there is no authentication, database, multi-user
+isolation, cancellation or public deployment; vegetation custom bounds are
+numeric in React while interactive drawing remains in Streamlit; MCI accuracy,
+alignment and supplied dates remain unverified; historical retrieval still
+depends on cached data or the existing bounded provider path; and Ollama is
+required for new natural-language plans, with deterministic fallback limited
+to supported post-result answers.
 
 ## Streamlit light-theme contrast audit
 
